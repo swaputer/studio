@@ -1,0 +1,13 @@
+.studio-header .site-header__inner { justify-content:flex-start; }
+.studio-header__product { padding-left:20px;border-left:1px solid var(--rule);color:var(--muted);font-size:13px;font-weight:620; }
+.studio-header .site-actions { margin-left:auto; }
+.studio-header__explorer { display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px; }
+.studio-header__explorer:hover { color:var(--ink); }
+.studio-mobile-gate a { display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 15px;border:1px solid var(--blue);border-radius:8px;color:var(--blue); }
+@media(max-width:620px) {
+  .studio-header .site-header__inner { width:calc(100% - 28px); }
+  .studio-header__product,.studio-header__explorer { display:none; }
+  .studio-header .brand span { font-size:18px; }
+  .studio-header .site-actions { margin-left:auto; }
+  .studio-header .wallet-button { min-width:0;padding:0 12px; }
+}
