@@ -4,10 +4,14 @@
 .studio-header__explorer { display:flex;align-items:center;gap:5px;color:var(--muted);font-size:12px; }
 .studio-header__explorer:hover { color:var(--ink); }
 .studio-mobile-gate a { display:inline-flex;align-items:center;justify-content:center;min-height:40px;padding:0 15px;border:1px solid var(--blue);border-radius:8px;color:var(--blue); }
+@media(max-width:899px) {
+  .studio-header .site-header__inner { width:calc(100% - 32px);display:flex; }
+  .studio-header__product,.studio-header__explorer,.studio-header .site-actions { display:none; }
+  .studio-mobile-gate { align-items:center;text-align:center; }
+  .studio-mobile-gate svg { color:var(--blue); }
+}
 @media(max-width:620px) {
   .studio-header .site-header__inner { width:calc(100% - 28px); }
   .studio-header__product,.studio-header__explorer { display:none; }
   .studio-header .brand span { font-size:18px; }
-  .studio-header .site-actions { margin-left:auto; }
-  .studio-header .wallet-button { min-width:0;padding:0 12px; }
 }

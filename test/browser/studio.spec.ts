@@ -12,6 +12,8 @@ test("Studio compiles TinySol and exposes deployment controls", async ({ page })
 test("mobile shows the supported desktop requirement", async ({ page }) => {
   await page.setViewportSize({ width: 390, height: 844 });
   await page.goto("/");
-  await expect(page.getByRole("heading", { name: "Studio requires a desktop screen" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Open Studio on a computer" })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Compile/ })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Connect wallet" })).toHaveCount(0);
   await expect(page.getByRole("link", { name: "Return to Explorer" })).toHaveAttribute("href", "http://127.0.0.1:4174");
 });

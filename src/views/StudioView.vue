@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onMounted, ref, watch } from "vue";
-import { Check, ChevronDown, Copy, FileCode2, LoaderCircle, Plus, Save, Terminal, TriangleAlert } from "@lucide/vue";
+import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { Check, ChevronDown, Copy, FileCode2, LoaderCircle, Monitor, Plus, Save, TriangleAlert } from "@lucide/vue";
 import CodeEditor from "@/components/CodeEditor.vue";
 import { useWallet } from "@/composables/useWallet";
 import { toast } from "@/composables/useToast";
@@ -37,6 +37,8 @@ const functionArgs = ref<Record<string, string[]>>({});
 const functionResults = ref<Record<string, string>>({});
 const activeFunction = ref<string | null>(null);
 const consoleEntries = ref<string[]>(["Studio ready"]);
+const desktopMedia = window.matchMedia("(min-width: 900px)");
+const desktopSupported = ref(desktopMedia.matches);
 let compileTimer: number | undefined;
 
 const encodedConstructor = computed(() => {
@@ -160,23 +162,37 @@ async function invoke(fn: StudioFunction) {
 const copy = (value: string) => void navigator.clipboard?.writeText(value);
 
 watch(source, () => {
+  if (!desktopSupported.value) return;
   saved.value = false;
   window.clearTimeout(compileTimer);
   compileTimer = window.setTimeout(() => void compile(false), 700);
 });
-onMounted(() => void compile(false));
+
+function syncDesktopSupport(event: MediaQueryListEvent | MediaQueryList) {
+  desktopSupported.value = event.matches;
+  if (event.matches && !build.value) void compile(false);
+}
+
+onMounted(() => {
+  desktopMedia.addEventListener("change", syncDesktopSupport);
+  if (desktopSupported.value) void compile(false);
+});
+onBeforeUnmount(() => {
+  desktopMedia.removeEventListener("change", syncDesktopSupport);
+  window.clearTimeout(compileTimer);
+});
 </script>
 
 <template>
   <main class="studio-page">
-    <section class="studio-mobile-gate">
-      <Terminal :size="32" />
-      <h1>Studio requires a desktop screen</h1>
-      <p>Open Swaputer Studio on a larger display to write, compile, deploy and operate mini contracts.</p>
+    <section v-if="!desktopSupported" class="studio-mobile-gate">
+      <Monitor :size="34" aria-hidden="true" />
+      <h1>Open Studio on a computer</h1>
+      <p>Swaputer Studio is designed for desktop browsers. Please visit this address from a PC or Mac to write, compile and deploy Mini Contracts.</p>
       <a :href="PROTOCOL_EXPLORER_URL">Return to Explorer</a>
     </section>
 
-    <section class="studio-desktop">
+    <section v-else class="studio-desktop">
       <div class="studio-workspace">
         <aside class="studio-explorer">
           <div class="studio-product-title">TinySol Studio</div>
