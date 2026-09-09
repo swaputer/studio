@@ -6,6 +6,8 @@ Studio keeps a local multi-file workspace in the browser. Developers can create,
 
 ## Development
 
+Requires Node.js 22.12 or later.
+
 ```sh
 npm ci
 npm run dev
@@ -27,7 +29,12 @@ npm run build
 npx playwright test
 ```
 
-The compiler is the published `@swaputer-labs/tinysol@0.3.2` package. Protocol addresses are pinned in `config/base-sepolia.json`; build-time overrides must match that release. Wallet account or network changes invalidate the active Studio signer and require reconnection.
+The compiler is the published `@swaputer-labs/tinysol@0.3.2` package, and
+confirmed Kernel receipts are decoded with
+`@swaputer-labs/receipt-codec@0.1.2`. Protocol addresses are pinned in
+`config/base-sepolia.json`; build-time overrides must match that release.
+Wallet account or network changes invalidate the active Studio signer and
+require reconnection.
 
 Deployments and state-changing calls share one protocol-write lock. Studio decodes the deployed program ID from the confirmed Kernel receipt; if an RPC cannot determine final transaction status, it keeps the full hash available for Explorer reconciliation and blocks another write until reload.
 
