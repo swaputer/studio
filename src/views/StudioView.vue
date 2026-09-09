@@ -1,11 +1,14 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { Check, ChevronDown, Copy, FileCode2, LoaderCircle, Monitor, Plus, Save, TriangleAlert } from "@lucide/vue";
+import {
+  Check, ChevronDown, Code2, Copy, FileCode2, Hammer, LoaderCircle, Monitor,
+  Play, Plus, Rocket, Save, Terminal, Trash2, TriangleAlert
+} from "@lucide/vue";
 import CodeEditor from "@/components/CodeEditor.vue";
 import { useWallet } from "@/composables/useWallet";
 import { toast } from "@/composables/useToast";
-import { NETWORK, PROTOCOL_EXPLORER_URL, SWAPVM } from "@/lib/config";
-import { deployMiniContract, friendlyError, readMiniContract, short, writeMiniContract } from "@/lib/protocol";
+import { NETWORK, PROTOCOL_EXPLORER_URL } from "@/lib/config";
+import { deployMiniContract, friendlyError, isTransactionStatusUnknown, readMiniContract, short, writeMiniContract } from "@/lib/protocol";
 import {
   EMPTY_CONTRACT,
   STUDIO_TEMPLATES,
@@ -19,77 +22,236 @@ import {
 
 type InspectorTab = "build" | "deploy" | "interact";
 type BuildPhase = "idle" | "compiling" | "success" | "error";
-const STORAGE_KEY = "swaputer.studio.source.v1";
+type ActivityMode = "code" | InspectorTab;
+type ConsoleTone = "default" | "success" | "error";
+type ConsoleEntry = { message: string; time: string; tone: ConsoleTone };
+type StudioFile = { id: string; name: string; source: string; saved: boolean; templateId?: string };
+type StoredFile = Omit<StudioFile, "saved"> & { saved?: boolean };
+type StoredWorkspace = { files: StoredFile[]; activeFileId: string | null };
+const LEGACY_STORAGE_KEY = "swaputer.studio.source.v1";
+const WORKSPACE_STORAGE_KEY = "swaputer.studio.workspace.v2";
+
+function createFileId() {
+  return `file-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function counterFile(source = STUDIO_TEMPLATES[0]!.source): StudioFile {
+  return { id: createFileId(), name: STUDIO_TEMPLATES[0]!.fileName, source, saved: true, templateId: "counter" };
+}
+
+function loadWorkspace(): { files: StudioFile[]; activeFileId: string | null } {
+  try {
+    const raw = localStorage.getItem(WORKSPACE_STORAGE_KEY);
+    if (raw) {
+      const parsed = JSON.parse(raw) as StoredWorkspace;
+      if (Array.isArray(parsed.files)) {
+        const files = parsed.files
+          .filter((file) => file && typeof file.id === "string" && typeof file.name === "string" && typeof file.source === "string")
+          .map((file) => ({ ...file, saved: file.saved !== false }));
+        const activeFileId = files.some((file) => file.id === parsed.activeFileId) ? parsed.activeFileId : files[0]?.id ?? null;
+        return { files, activeFileId };
+      }
+    }
+  } catch (cause) {
+    console.warn("[studio] failed to restore workspace", cause);
+  }
+
+  let legacySource: string | undefined;
+  try { legacySource = localStorage.getItem(LEGACY_STORAGE_KEY) || undefined; }
+  catch (cause) { console.warn("[studio] failed to restore legacy source", cause); }
+  const file = counterFile(legacySource);
+  return { files: [file], activeFileId: file.id };
+}
+
+const initialWorkspace = loadWorkspace();
 const wallet = useWallet();
-const templateId = ref("counter");
-const fileName = ref("counter.tsol");
-const source = ref(localStorage.getItem(STORAGE_KEY) || STUDIO_TEMPLATES[0]!.source);
+const files = ref<StudioFile[]>(initialWorkspace.files);
+const activeFileId = ref<string | null>(initialWorkspace.activeFileId);
+const activeFile = computed(() => files.value.find((file) => file.id === activeFileId.value) ?? null);
+const templateId = computed(() => activeFile.value?.templateId ?? "");
+const fileName = computed({
+  get: () => activeFile.value?.name ?? "No file open",
+  set: (value: string) => { if (activeFile.value) activeFile.value.name = value; }
+});
+const source = computed({
+  get: () => activeFile.value?.source ?? "",
+  set: (value: string) => { if (activeFile.value) activeFile.value.source = value; }
+});
+const saved = computed({
+  get: () => activeFile.value?.saved ?? true,
+  set: (value: boolean) => { if (activeFile.value) activeFile.value.saved = value; }
+});
 const build = ref<StudioBuild | null>(null);
 const buildPhase = ref<BuildPhase>("idle");
 const buildError = ref<string | null>(null);
-const saved = ref(true);
 const inspectorTab = ref<InspectorTab>("deploy");
+const activityMode = ref<ActivityMode>("code");
+const consoleOpen = ref(true);
 const constructorValues = ref<string[]>([]);
 const byteGasLimit = ref("20000");
-const deployPhase = ref<"idle" | "signing" | "pending" | "confirmed">("idle");
+const deployPhase = ref<"idle" | "signing" | "pending" | "confirmed" | "unknown">("idle");
 const targetId = ref("");
+const deployment = ref<{ programId: string | null; transactionHash: string } | null>(null);
 const functionArgs = ref<Record<string, string[]>>({});
 const functionResults = ref<Record<string, string>>({});
 const activeFunction = ref<string | null>(null);
-const consoleEntries = ref<string[]>(["Studio ready"]);
+const deploymentInFlight = ref(false);
+const functionInFlight = ref(false);
+const chainActionInFlight = ref(false);
+const unresolvedTransactionHash = ref<string | null>(null);
+const consoleEntries = ref<ConsoleEntry[]>([{ message: "Studio ready", time: new Date().toLocaleTimeString("en-GB", { hour12: false }), tone: "success" }]);
 const desktopMedia = window.matchMedia("(min-width: 900px)");
 const desktopSupported = ref(desktopMedia.matches);
 let compileTimer: number | undefined;
+let initialBuildReported = false;
+let compileRun = 0;
+let deployRun = 0;
+let functionRun = 0;
+
+function addConsole(message: string, tone: ConsoleTone = "default") {
+  consoleEntries.value.push({ message, time: new Date().toLocaleTimeString("en-GB", { hour12: false }), tone });
+}
+
+function openInspector(tab: InspectorTab) {
+  inspectorTab.value = tab;
+  activityMode.value = tab;
+}
+
+const tabLabel = (tab: InspectorTab) => tab.charAt(0).toUpperCase() + tab.slice(1);
+const defaultScalarValue = (type: string) => /^(u?int)/.test(type) ? "0" : type === "bool" ? "false" : "";
 
 const encodedConstructor = computed(() => {
   if (!build.value) return { value: "0x", error: null as string | null };
   try { return { value: encodeConstructorArguments(build.value.constructorTypes, constructorValues.value), error: null }; }
   catch (cause) { return { value: "0x", error: friendlyError(cause) }; }
 });
-const deployed = computed(() => deployPhase.value === "confirmed" && /^0x[0-9a-fA-F]{64}$/.test(targetId.value));
+const deployed = computed(() => deployPhase.value === "confirmed"
+  && deployment.value?.programId?.toLowerCase() === targetId.value.trim().toLowerCase());
+const deploymentTransactionUrl = computed(() => deployment.value
+  ? `${PROTOCOL_EXPLORER_URL.replace(/\/$/, "")}/tx/${deployment.value.transactionHash}`
+  : "");
+const unresolvedTransactionUrl = computed(() => unresolvedTransactionHash.value
+  ? `${PROTOCOL_EXPLORER_URL.replace(/\/$/, "")}/tx/${unresolvedTransactionHash.value}`
+  : "");
 
 async function compile(foreground = true) {
-  if (foreground) buildPhase.value = "compiling";
+  if (!activeFile.value) {
+    build.value = null;
+    buildPhase.value = "idle";
+    buildError.value = null;
+    if (foreground) toast.error("Create or open a file before compiling.");
+    return;
+  }
+  const run = ++compileRun;
+  const compilingFileId = activeFileId.value;
+  const compilingSource = source.value;
+  const compilingFileName = fileName.value;
+  if (foreground) window.clearTimeout(compileTimer);
+  buildPhase.value = "compiling";
   try {
-    const result = await compileStudioSource(source.value, fileName.value);
+    const result = await compileStudioSource(compilingSource, compilingFileName);
+    if (run !== compileRun || compilingFileId !== activeFileId.value || compilingSource !== source.value) return;
     build.value = result;
     buildPhase.value = "success";
     buildError.value = null;
-    constructorValues.value = result.constructorTypes.map(() => "");
-    functionArgs.value = Object.fromEntries(result.functions.map((fn) => [fn.selector, fn.inputs.map(() => "")]));
-    if (foreground) consoleEntries.value.push(`Build succeeded · ${result.packageLength} package bytes`);
+    constructorValues.value = result.constructorTypes.map((type, index) => constructorValues.value[index] ?? defaultScalarValue(type));
+    functionArgs.value = Object.fromEntries(result.functions.map((fn) => [
+      fn.selector,
+      fn.inputs.map((type, index) => functionArgs.value[fn.selector]?.[index] ?? defaultScalarValue(type))
+    ]));
+    if (foreground) addConsole(`Build succeeded · ${result.packageLength} package bytes`, "success");
+    else if (!initialBuildReported) {
+      addConsole(`Compiling ${fileName.value}…`);
+      addConsole(`Build succeeded · ${result.packageLength} package bytes`, "success");
+      initialBuildReported = true;
+    }
   } catch (cause) {
+    if (run !== compileRun || compilingFileId !== activeFileId.value) return;
     console.error("[studio] compilation failed", cause);
+    const message = await formatStudioError(cause);
+    if (run !== compileRun || compilingFileId !== activeFileId.value) return;
     build.value = null;
     buildPhase.value = "error";
-    buildError.value = await formatStudioError(cause);
-    if (foreground) consoleEntries.value.push("Build failed");
+    buildError.value = message;
+    if (foreground) addConsole("Build failed", "error");
   }
 }
 
 function chooseTemplate(id: string) {
   const template = STUDIO_TEMPLATES.find((item) => item.id === id);
   if (!template) return;
-  templateId.value = id;
-  fileName.value = template.fileName;
-  source.value = template.source;
-  saved.value = false;
+  let file = files.value.find((item) => item.templateId === id);
+  if (!file) {
+    file = { id: createFileId(), name: template.fileName, source: template.source, saved: false, templateId: id };
+    files.value.push(file);
+  }
+  activeFileId.value = file.id;
+  persistWorkspace();
 }
 
 function newFile() {
-  templateId.value = "";
-  fileName.value = "my-contract.tsol";
-  source.value = EMPTY_CONTRACT;
-  saved.value = false;
+  let index = 1;
+  let name = "my-contract.tsol";
+  const names = new Set(files.value.map((file) => file.name));
+  while (names.has(name)) name = `my-contract-${++index}.tsol`;
+  const file: StudioFile = { id: createFileId(), name, source: EMPTY_CONTRACT, saved: false };
+  files.value.push(file);
+  activeFileId.value = file.id;
+  persistWorkspace();
+  addConsole(`Created ${name}`);
+}
+
+function selectFile(id: string) {
+  if (!files.value.some((file) => file.id === id) || activeFileId.value === id) return;
+  activeFileId.value = id;
+  persistWorkspace();
+}
+
+function persistWorkspace(): boolean {
+  const workspace: StoredWorkspace = {
+    activeFileId: activeFileId.value,
+    files: files.value.map((file) => ({ ...file }))
+  };
+  try {
+    localStorage.setItem(WORKSPACE_STORAGE_KEY, JSON.stringify(workspace));
+    return true;
+  } catch (cause) {
+    console.warn("[studio] failed to save workspace", cause);
+    toast.error("Studio could not save this workspace in the browser.");
+    return false;
+  }
+}
+
+function deleteFile(id: string) {
+  const index = files.value.findIndex((file) => file.id === id);
+  if (index < 0) return;
+  const [removed] = files.value.splice(index, 1);
+  if (activeFileId.value === id) {
+    window.clearTimeout(compileTimer);
+    compileRun += 1;
+    activeFileId.value = files.value[index]?.id ?? files.value[index - 1]?.id ?? null;
+    build.value = null;
+    buildPhase.value = "idle";
+    buildError.value = null;
+  }
+  persistWorkspace();
+  addConsole(`Deleted ${removed!.name}`);
+  toast.success(`${removed!.name} deleted.`);
 }
 
 function save() {
-  localStorage.setItem(STORAGE_KEY, source.value);
+  if (!activeFile.value) return;
+  const previouslySaved = saved.value;
   saved.value = true;
-  consoleEntries.value.push("Saved locally");
+  if (!persistWorkspace()) {
+    saved.value = previouslySaved;
+    return;
+  }
+  addConsole("Saved locally", "success");
 }
 
 async function deploy() {
+  if (deploymentInFlight.value || functionInFlight.value || chainActionInFlight.value) return;
   if (!wallet.address.value || !wallet.signer.value) {
     await wallet.connect();
     return;
@@ -98,26 +260,75 @@ async function deploy() {
   if (encodedConstructor.value.error) { toast.error(encodedConstructor.value.error); return; }
   const limit = Number(byteGasLimit.value);
   if (!Number.isInteger(limit) || limit <= 0) { toast.error("Enter a valid byte gas limit."); return; }
+  const run = deployRun;
+  const session = wallet.session.value;
+  const signer = wallet.signer.value;
+  const address = wallet.address.value;
+  const compiled = build.value;
+  const constructorData = encodedConstructor.value.value;
+  deploymentInFlight.value = true;
+  chainActionInFlight.value = true;
+  unresolvedTransactionHash.value = null;
+  deployment.value = null;
   deployPhase.value = "signing";
-  consoleEntries.value.push("Waiting for deployment signature");
+  addConsole("Waiting for deployment signature");
+  let keepChainLock = false;
   try {
     const result = await deployMiniContract(
-      wallet.signer.value,
-      wallet.address.value,
-      build.value.packageBytes,
-      encodedConstructor.value.value,
+      signer,
+      address,
+      compiled.packageBytes,
+      constructorData,
       limit,
-      (_hash: string) => { deployPhase.value = "pending"; consoleEntries.value.push("Deployment submitted"); }
+      (hash: string) => {
+        deployPhase.value = "pending";
+        addConsole(`Deployment submitted · ${short(hash, 10, 8)}`);
+      }
     );
-    targetId.value = result.programId;
-    deployPhase.value = "confirmed";
-    inspectorTab.value = "interact";
-    consoleEntries.value.push(`Deployment confirmed · ${short(result.programId, 12, 10)}`);
-    toast.success("Mini contract deployed.");
+    const current = run === deployRun && session === wallet.session.value;
+    const programId = result.confirmedProgramId;
+    deployment.value = { programId, transactionHash: result.receipt.hash };
+    if (current && programId) {
+      targetId.value = programId;
+      deployPhase.value = "confirmed";
+      openInspector("interact");
+      addConsole(`Deployment confirmed · ${short(programId, 12, 10)}`, "success");
+      toast.success("Mini contract deployed.");
+    } else if (current) {
+      keepChainLock = true;
+      chainActionInFlight.value = true;
+      unresolvedTransactionHash.value = result.receipt.hash;
+      deployPhase.value = "unknown";
+      openInspector("interact");
+      addConsole(`Deployment transaction confirmed, but its program ID could not be decoded · ${short(result.receipt.hash, 10, 8)}`, "error");
+      toast.success("Deployment confirmed. Verify its program ID in Explorer before retrying.");
+    } else {
+      if (programId) deployPhase.value = "idle";
+      else {
+        keepChainLock = true;
+        chainActionInFlight.value = true;
+        unresolvedTransactionHash.value = result.receipt.hash;
+        deployPhase.value = "unknown";
+      }
+      addConsole(`Deployment confirmed for a previous editor or wallet context · ${short(programId || result.receipt.hash, 12, 10)}`, "success");
+      toast.success("A previously started deployment was confirmed.");
+    }
   } catch (cause) {
-    deployPhase.value = "idle";
-    toast.error(friendlyError(cause));
-    consoleEntries.value.push("Deployment failed");
+    if (isTransactionStatusUnknown(cause)) {
+      keepChainLock = true;
+      unresolvedTransactionHash.value = cause.transactionHash;
+      deployPhase.value = "unknown";
+      deployment.value = { programId: null, transactionHash: cause.transactionHash };
+      toast.error(friendlyError(cause));
+      addConsole(`Deployment status unknown. Check Explorer before retrying · ${cause.transactionHash}`, "error");
+    } else {
+      deployPhase.value = "idle";
+      toast.error(friendlyError(cause));
+      addConsole("Deployment failed", "error");
+    }
+  } finally {
+    deploymentInFlight.value = false;
+    if (!keepChainLock) chainActionInFlight.value = false;
   }
 }
 
@@ -127,55 +338,145 @@ function parsedArgs(fn: StudioFunction): unknown[] {
 }
 
 async function invoke(fn: StudioFunction) {
+  if (functionInFlight.value || deploymentInFlight.value) return;
   if (!build.value) return;
   if (!/^0x[0-9a-fA-F]{64}$/.test(targetId.value.trim())) {
     functionResults.value[fn.selector] = "Enter a valid 32-byte Mini Contract address.";
     return;
   }
+  if (!fn.view && (!wallet.address.value || !wallet.signer.value)) {
+    await wallet.connect();
+    if (wallet.address.value && wallet.signer.value) {
+      functionResults.value[fn.selector] = "Wallet connected. Send the transaction again.";
+    }
+    return;
+  }
+  if (!fn.view && chainActionInFlight.value) return;
+  const run = functionRun;
+  const session = wallet.session.value;
+  const target = targetId.value.trim();
+  const signer = wallet.signer.value;
+  const address = wallet.address.value;
+  functionInFlight.value = true;
+  if (!fn.view) chainActionInFlight.value = true;
+  if (!fn.view) unresolvedTransactionHash.value = null;
   activeFunction.value = fn.selector;
   functionResults.value[fn.selector] = fn.view ? "Calling…" : "Preparing transaction…";
+  let keepChainLock = false;
+  const isCurrent = () => run === functionRun
+    && session === wallet.session.value
+    && target === targetId.value.trim();
   try {
     const args = parsedArgs(fn);
     if (fn.view) {
-      const result = await readMiniContract(targetId.value.trim(), fn.signature, fn.inputs, fn.outputs, args);
+      const result = await readMiniContract(target, fn.signature, fn.inputs, fn.outputs, args, wallet.address.value);
+      if (!isCurrent()) return;
       functionResults.value[fn.selector] = result.values.length ? result.values.join(", ") : `Success · ${result.bytesUsed} bytes used`;
-      consoleEntries.value.push(`${fn.signature} called`);
+      addConsole(`${fn.signature} called`, "success");
     } else {
-      if (!wallet.address.value || !wallet.signer.value) {
-        await wallet.connect();
-        functionResults.value[fn.selector] = "Wallet connected. Send the transaction again.";
-        return;
-      }
-      const receipt = await writeMiniContract(wallet.signer.value, wallet.address.value, targetId.value.trim(), fn.signature, fn.inputs, args, Number(byteGasLimit.value), (hash: string) => {
-        functionResults.value[fn.selector] = `Pending · ${short(hash, 10, 8)}`;
+      const receipt = await writeMiniContract(signer!, address!, target, fn.signature, fn.inputs, args, Number(byteGasLimit.value), (hash: string) => {
+        addConsole(`${fn.signature} submitted · ${short(hash, 10, 8)}`);
+        if (isCurrent()) functionResults.value[fn.selector] = `Pending · ${short(hash, 10, 8)}`;
       });
-      functionResults.value[fn.selector] = `Confirmed · block ${receipt.blockNumber}`;
-      consoleEntries.value.push(`${fn.signature} confirmed`);
+      if (isCurrent()) {
+        functionResults.value[fn.selector] = `Confirmed · block ${receipt.blockNumber}`;
+        addConsole(`${fn.signature} confirmed`, "success");
+      } else {
+        addConsole(`${fn.signature} confirmed for a previous target or wallet context`, "success");
+      }
     }
   } catch (cause) {
-    functionResults.value[fn.selector] = friendlyError(cause);
+    if (isTransactionStatusUnknown(cause)) {
+      keepChainLock = true;
+      unresolvedTransactionHash.value = cause.transactionHash;
+      if (isCurrent()) functionResults.value[fn.selector] = friendlyError(cause);
+      addConsole(`${fn.signature} status unknown. Check Explorer before retrying · ${cause.transactionHash}`, "error");
+    } else {
+      if (isCurrent()) functionResults.value[fn.selector] = friendlyError(cause);
+      addConsole(`${fn.signature} failed`, "error");
+    }
   } finally {
+    functionInFlight.value = false;
+    if (!fn.view && !keepChainLock) chainActionInFlight.value = false;
     activeFunction.value = null;
   }
 }
 
-const copy = (value: string) => void navigator.clipboard?.writeText(value);
+async function copy(value: string) {
+  try { await navigator.clipboard.writeText(value); }
+  catch { toast.error("Could not copy. Select the value and copy it manually."); }
+}
 
-watch(source, () => {
-  if (!desktopSupported.value) return;
-  saved.value = false;
+watch([activeFileId, source], ([currentId, currentSource], [previousId, previousSource]) => {
   window.clearTimeout(compileTimer);
+  compileRun += 1;
+  deployRun += 1;
+  functionRun += 1;
+  if (!activeFile.value) {
+    build.value = null;
+    buildPhase.value = "idle";
+    buildError.value = null;
+    constructorValues.value = [];
+    functionArgs.value = {};
+    functionResults.value = {};
+    if (!deploymentInFlight.value && deployPhase.value !== "unknown") {
+      deployPhase.value = "idle";
+      deployment.value = null;
+    }
+    if (!functionInFlight.value) activeFunction.value = null;
+    targetId.value = "";
+    return;
+  }
+  if (currentId === previousId && currentSource !== previousSource) saved.value = false;
+  build.value = null;
+  buildPhase.value = "idle";
+  buildError.value = null;
+  constructorValues.value = [];
+  functionArgs.value = {};
+  functionResults.value = {};
+  if (!deploymentInFlight.value && deployPhase.value !== "unknown") {
+    deployPhase.value = "idle";
+    deployment.value = null;
+  }
+  if (!functionInFlight.value) activeFunction.value = null;
+  if (currentId !== previousId) targetId.value = "";
+  if (!desktopSupported.value) return;
   compileTimer = window.setTimeout(() => void compile(false), 700);
 });
 
+watch(wallet.session, () => {
+  deployRun += 1;
+  functionRun += 1;
+  functionResults.value = {};
+  if (!deploymentInFlight.value && deployPhase.value !== "unknown" && (deployPhase.value === "signing" || deployPhase.value === "pending")) deployPhase.value = "idle";
+  if (!functionInFlight.value) activeFunction.value = null;
+});
+
+watch(targetId, () => {
+  functionRun += 1;
+  functionResults.value = {};
+}, { flush: "sync" });
+
+watch(functionArgs, () => {
+  functionRun += 1;
+  functionResults.value = {};
+}, { deep: true, flush: "sync" });
+
+watch(constructorValues, () => { deployRun += 1; }, { deep: true, flush: "sync" });
+watch(byteGasLimit, () => {
+  deployRun += 1;
+  functionRun += 1;
+  functionResults.value = {};
+}, { flush: "sync" });
+
 function syncDesktopSupport(event: MediaQueryListEvent | MediaQueryList) {
   desktopSupported.value = event.matches;
-  if (event.matches && !build.value) void compile(false);
+  if (event.matches && activeFile.value && !build.value) void compile(false);
 }
 
 onMounted(() => {
   desktopMedia.addEventListener("change", syncDesktopSupport);
-  if (desktopSupported.value) void compile(false);
+  if (desktopSupported.value && activeFile.value) void compile(false);
 });
 onBeforeUnmount(() => {
   desktopMedia.removeEventListener("change", syncDesktopSupport);
@@ -194,36 +495,49 @@ onBeforeUnmount(() => {
 
     <section v-else class="studio-desktop">
       <div class="studio-workspace">
+        <nav class="studio-activity" aria-label="Studio tools">
+          <button type="button" :class="{ active: activityMode === 'code' }" title="Code" @click="activityMode = 'code'"><Code2 :size="20" /><span>Code</span></button>
+          <button type="button" :class="{ active: activityMode === 'build' }" title="Build" @click="openInspector('build')"><Hammer :size="19" /><span>Build</span></button>
+          <button type="button" :class="{ active: activityMode === 'deploy' }" title="Deploy" @click="openInspector('deploy')"><Rocket :size="19" /><span>Deploy</span></button>
+          <button type="button" :class="{ active: activityMode === 'interact' }" title="Interact" @click="openInspector('interact')"><Play :size="19" /><span>Interact</span></button>
+        </nav>
+
         <aside class="studio-explorer">
-          <div class="studio-product-title">TinySol Studio</div>
+          <div class="studio-product-title"><strong>Files</strong><button type="button" title="New file" aria-label="New file" @click="newFile"><Plus :size="17" /></button></div>
           <h2>TEMPLATES</h2>
           <button v-for="template in STUDIO_TEMPLATES" :key="template.id" type="button" :class="{ active: templateId === template.id }" @click="chooseTemplate(template.id)"><FileCode2 :size="17" /><span><strong>{{ template.name }}</strong><small>{{ template.description }}</small></span></button>
           <div class="explorer-rule" />
           <h2>FILES</h2>
-          <button class="active" type="button"><FileCode2 :size="17" /><span><strong>{{ fileName }}</strong></span></button>
-          <button type="button"><FileCode2 :size="17" /><span><strong>README.md</strong></span></button>
+          <div v-for="file in files" :key="file.id" :class="['studio-file-row', { active: activeFileId === file.id }]">
+            <button class="studio-file-main" type="button" @click="selectFile(file.id)"><FileCode2 :size="17" /><span><strong>{{ file.name }}</strong><small v-if="!file.saved">Unsaved</small></span></button>
+            <button class="studio-file-delete" type="button" :title="`Delete ${file.name}`" :aria-label="`Delete ${file.name}`" @click.stop="deleteFile(file.id)"><Trash2 :size="14" /></button>
+          </div>
+          <p v-if="!files.length" class="studio-files-empty">No files. Create a file or open the Counter template.</p>
           <button class="new-file" type="button" @click="newFile"><Plus :size="18" />New file</button>
         </aside>
 
-        <section class="studio-editor-column">
+        <section :class="['studio-editor-column', { 'console-collapsed': !consoleOpen }]">
           <div class="editor-toolbar">
-            <button type="button" @click="newFile"><Plus :size="18" />New</button>
-            <button type="button" @click="save"><Save :size="18" />{{ saved ? 'Saved' : 'Save' }}</button>
-            <label><select v-model="templateId" @change="chooseTemplate(templateId)"><option v-for="template in STUDIO_TEMPLATES" :key="template.id" :value="template.id">{{ template.name }}</option></select><ChevronDown :size="16" /></label>
-            <button class="compile-button" type="button" :disabled="buildPhase === 'compiling'" @click="compile()"><LoaderCircle v-if="buildPhase === 'compiling'" class="spin" :size="18" /><span v-else>▷</span>Compile</button>
+            <div :class="['editor-file-tab', { 'editor-file-tab--empty': !activeFile }]"><FileCode2 :size="16" /><span>{{ fileName }}</span><i v-if="activeFile && !saved" title="Unsaved changes" /></div>
+            <div class="editor-toolbar__actions">
+              <button type="button" :disabled="!activeFile" @click="save"><Save :size="16" />{{ saved ? 'Saved' : 'Save' }}</button>
+              <button class="compile-button" type="button" :disabled="!activeFile || buildPhase === 'compiling'" @click="compile()"><LoaderCircle v-if="buildPhase === 'compiling'" class="spin" :size="16" /><Play v-else :size="15" fill="currentColor" />Compile</button>
+              <div :class="['editor-build-state', `editor-build-state--${buildPhase}`]"><i /><span>{{ buildPhase === 'success' ? 'Compiled successfully' : buildPhase === 'compiling' ? 'Compiling source' : buildPhase === 'error' ? 'Build failed' : 'Ready to compile' }}</span></div>
+            </div>
           </div>
-          <div class="editor-tab"><span>{{ fileName }}</span><small><i />{{ saved ? 'Saved locally' : 'Unsaved' }}</small></div>
-          <CodeEditor v-model="source" />
+          <CodeEditor v-if="activeFile" :key="activeFile.id" v-model="source" />
+          <div v-else class="studio-editor-empty"><FileCode2 :size="30" /><strong>No file open</strong><span>Create a new TinySol file or open the Counter template.</span><button type="button" @click="newFile"><Plus :size="16" />New file</button></div>
           <div class="studio-console">
-            <header><span>CONSOLE</span><button type="button" @click="consoleEntries = []">Clear</button></header>
-            <div><p v-for="(entry, index) in consoleEntries.slice(-4)" :key="`${entry}-${index}`"><Check :size="14" />{{ entry }}</p></div>
+            <header><span><Terminal :size="14" />Console</span><div><button type="button" @click="consoleEntries = []">Clear</button><button type="button" :aria-label="consoleOpen ? 'Collapse console' : 'Expand console'" @click="consoleOpen = !consoleOpen"><ChevronDown :class="{ 'console-chevron--open': consoleOpen }" :size="16" /></button></div></header>
+            <div v-show="consoleOpen"><p v-for="(entry, index) in consoleEntries.slice(-6)" :key="`${entry.time}-${entry.message}-${index}`" :class="`console-entry--${entry.tone}`"><span class="console-entry__time">[{{ entry.time }}]</span><Check v-if="entry.tone === 'success'" :size="13" /><TriangleAlert v-else-if="entry.tone === 'error'" :size="13" /><span>{{ entry.message }}</span></p><p v-if="!consoleEntries.length" class="console-entry--empty">No console output.</p></div>
           </div>
         </section>
 
         <aside class="studio-inspector">
           <nav>
-            <button v-for="tab in (['build','deploy','interact'] as InspectorTab[])" :key="tab" type="button" :class="{ active: inspectorTab === tab }" @click="inspectorTab = tab">{{ tab.toUpperCase() }}</button>
+            <button v-for="tab in (['build','deploy','interact'] as InspectorTab[])" :key="tab" type="button" :class="{ active: inspectorTab === tab }" @click="openInspector(tab)">{{ tabLabel(tab) }}</button>
           </nav>
+          <a v-if="unresolvedTransactionHash" class="inspector-recovery" :href="unresolvedTransactionUrl" target="_blank" rel="noreferrer">Confirmation unknown · verify transaction in Explorer</a>
 
           <div v-if="inspectorTab === 'build'" class="inspector-body">
             <div :class="['build-banner', `build-banner--${buildPhase}`]">
@@ -240,37 +554,37 @@ onBeforeUnmount(() => {
             </dl>
             <div class="hash-block"><span>Package hash</span><code>{{ build ? short(build.codeHash, 18, 14) : '—' }}</code><button type="button" :disabled="!build" @click="build && copy(build.codeHash)"><Copy :size="15" /></button></div>
             <div class="function-index"><h3>Functions</h3><div v-for="fn in build?.functions" :key="fn.selector"><code>{{ fn.signature }}</code><span>{{ fn.view ? 'read' : 'write' }}</span></div></div>
-            <button class="inspector-primary" type="button" :disabled="!build" @click="inspectorTab = 'deploy'">Continue to deploy</button>
+            <button class="inspector-primary" type="button" :disabled="!build" @click="openInspector('deploy')">Continue to deploy</button>
           </div>
 
           <div v-else-if="inspectorTab === 'deploy'" class="inspector-body deploy-panel">
             <div class="panel-intro"><h2>{{ build?.contractName || 'Compile first' }}</h2><p>Constructor arguments are encoded from the compiled ABI.</p></div>
             <div v-if="build?.constructorTypes.length" class="constructor-fields">
-              <label v-for="(type, index) in build.constructorTypes" :key="`${type}-${index}`"><span>Argument {{ index + 1 }}</span><small>{{ type }}</small><input v-model="constructorValues[index]" :placeholder="type" spellcheck="false" /></label>
+              <label v-for="(type, index) in build.constructorTypes" :key="`${type}-${index}`"><span>{{ index === 0 ? 'Constructor arguments' : `Argument ${index + 1}` }}</span><small>{{ type }}</small><input v-model="constructorValues[index]" :placeholder="type" spellcheck="false" /></label>
             </div>
             <p v-else class="no-constructor">This contract has no constructor arguments.</p>
             <label class="encoded-args"><span>Encoded constructor data</span><textarea :value="encodedConstructor.error || encodedConstructor.value" readonly /></label>
             <label class="gas-input"><span>Byte gas limit</span><input v-model="byteGasLimit" inputmode="numeric" /></label>
             <dl class="deploy-summary"><div><dt>Network</dt><dd>{{ NETWORK.displayName }}</dd></div><div><dt>Wallet</dt><dd>{{ wallet.address.value ? short(wallet.address.value) : 'Not connected' }}</dd></div></dl>
-            <button class="inspector-primary" type="button" :disabled="deployPhase === 'signing' || deployPhase === 'pending' || !build" @click="deploy"><LoaderCircle v-if="deployPhase === 'signing' || deployPhase === 'pending'" class="spin" :size="17" />{{ !wallet.address.value ? 'Connect wallet' : deployPhase === 'signing' ? 'Confirm signature' : deployPhase === 'pending' ? 'Deploying' : 'Deploy contract' }}</button>
+            <button class="inspector-primary" type="button" :disabled="deploymentInFlight || functionInFlight || chainActionInFlight || !build" @click="deploy"><LoaderCircle v-if="deploymentInFlight" class="spin" :size="17" />{{ !wallet.address.value ? 'Connect wallet' : deployPhase === 'signing' ? 'Confirm signature' : deployPhase === 'pending' ? 'Deploying' : deployPhase === 'unknown' ? 'Check in Explorer' : 'Deploy contract' }}</button>
           </div>
 
           <div v-else class="inspector-body interact-panel">
             <div class="status-strip"><span><Check :size="15" />{{ buildPhase === 'success' ? `Build passed · ${build?.codeLength} B` : 'Build required' }}</span><span><Check v-if="deployed" :size="15" />{{ deployed ? `Deployed · ${NETWORK.displayName}` : 'Address required' }}</span></div>
             <label class="target-input"><span>MINI CONTRACT ADDRESS</span><div><input v-model="targetId" spellcheck="false" placeholder="0x…" /><button type="button" :disabled="!targetId" @click="copy(targetId)"><Copy :size="15" /></button></div></label>
-            <a v-if="deployed" :href="`${NETWORK.explorerUrl}/address/${SWAPVM.kernel}`" target="_blank" rel="noreferrer">View protocol transaction</a>
+            <a v-if="deployment" :href="deploymentTransactionUrl" target="_blank" rel="noreferrer">View deployment transaction</a>
             <div v-if="!build" class="interact-empty">Compile the matching source to generate the contract interaction form.</div>
             <section v-for="fn in build?.functions" :key="fn.selector" class="function-card">
               <header><span>{{ fn.view ? 'READ' : 'WRITE' }}</span><code>{{ fn.signature }}</code></header>
               <label v-for="(type, index) in fn.inputs" :key="`${fn.selector}-${index}`"><span>Argument {{ index + 1 }}</span><small>{{ type }}</small><input v-model="functionArgs[fn.selector]![index]" :placeholder="type" spellcheck="false" /></label>
-              <button :class="{ primary: !fn.view }" type="button" :disabled="activeFunction === fn.selector" @click="invoke(fn)"><LoaderCircle v-if="activeFunction === fn.selector" class="spin" :size="15" />{{ fn.view ? 'Call' : 'Send transaction' }}</button>
+              <button :class="{ primary: !fn.view }" type="button" :disabled="functionInFlight || deploymentInFlight || (!fn.view && chainActionInFlight)" @click="invoke(fn)"><LoaderCircle v-if="activeFunction === fn.selector" class="spin" :size="15" />{{ fn.view ? 'Call' : 'Send transaction' }}</button>
               <output v-if="functionResults[fn.selector]">{{ functionResults[fn.selector] }}</output>
             </section>
           </div>
         </aside>
       </div>
 
-      <footer class="studio-statusbar"><span>TinySol 0.3</span><span>{{ fileName }}</span><span>UTF-8</span><span><i />{{ buildPhase === 'error' ? 'Build error' : 'Ready' }}</span></footer>
+      <footer class="studio-statusbar"><span>TinySol 0.3</span><span>{{ fileName }}</span><span>Spaces: 2</span><span>UTF-8</span><span><i />{{ buildPhase === 'error' ? 'Build error' : buildPhase === 'compiling' ? 'Compiling' : 'Ready' }}</span></footer>
     </section>
   </main>
 </template>

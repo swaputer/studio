@@ -3,6 +3,8 @@ import test from "node:test";
 import { STUDIO_TEMPLATES, compileStudioSource, encodeConstructorArguments } from "../src/lib/studio.ts";
 
 test("published TinySol compiler builds the default Studio template", async () => {
+  assert.equal(STUDIO_TEMPLATES.length, 1);
+  assert.equal(STUDIO_TEMPLATES[0].id, "counter");
   const template = STUDIO_TEMPLATES[0];
   const build = await compileStudioSource(template.source, template.fileName);
   assert.equal(build.contractName, "Counter");

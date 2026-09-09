@@ -2,22 +2,20 @@ import {
   AbiCoder,
   BrowserProvider,
   Contract,
+  Interface,
   JsonRpcProvider,
-  ZeroAddress,
-  ZeroHash,
   concat,
-  decodeBytes32String,
   getAddress,
   hexlify,
   id,
-  isAddress,
   keccak256,
   toBeHex,
   type ContractRunner,
   type ContractTransactionReceipt,
   type Signer
 } from "ethers";
-import { HOOK_ABI, KERNEL_ABI, NETWORK, SETH, SETH_VAULT_ABI, SWAPVM } from "./config";
+import { decodeVMReceipt } from "@swaputer-labs/receipt-codec";
+import { KERNEL_ABI, NETWORK, SWAPVM } from "./config";
 import {
   UNIVERSAL_ROUTER_ABI,
   encodeDirectSVMUniversalRouterSwap,
@@ -28,12 +26,10 @@ import {
 export type { VMExecutionRoute } from "./universalRouter";
 
 const abi = AbiCoder.defaultAbiCoder();
+const kernelInterface = new Interface(KERNEL_ABI);
 export const readProvider = new JsonRpcProvider(NETWORK.rpcUrl, NETWORK.chainId, { staticNetwork: true });
 
 export interface WalletConnection { readonly provider: BrowserProvider; readonly signer: Signer; readonly address: string }
-export interface TokenSnapshot { readonly name: string; readonly symbol: string; readonly decimals: number; readonly mintAmount: bigint; readonly cap: bigint; readonly totalSupply: bigint }
-export interface BridgeSnapshot { readonly balance: bigint; readonly totalSupply: bigint; readonly lockedEth: bigint; readonly backingSurplus: bigint; readonly solvent: boolean }
-export interface ProtocolFeeConfig { readonly feeBps: number; readonly controller: string }
 
 export function friendlyError(error: unknown): string {
   if (error instanceof Error) {
@@ -71,7 +67,7 @@ export async function connectWallet(): Promise<WalletConnection> {
 }
 
 function requireProtocol(): void {
-  if (!SWAPVM.enabled) throw new Error("Mainnet protocol addresses are not configured for this build.");
+  if (!SWAPVM.enabled) throw new Error("Protocol addresses are not configured for this build.");
 }
 
 function requireDirectProtocol(): void {
@@ -86,71 +82,18 @@ export function kernelContract(runner: ContractRunner = readProvider): Contract 
   return new Contract(SWAPVM.kernel, KERNEL_ABI, runner);
 }
 
-export async function readProtocolFeeConfig(): Promise<ProtocolFeeConfig> {
-  requireProtocol();
-  const hook = new Contract(SWAPVM.hook, HOOK_ABI, readProvider);
-  const [feeBps, controller] = await Promise.all([
-    hook.getFunction("protocolFeeBps").staticCall() as Promise<bigint>,
-    hook.getFunction("feeController").staticCall() as Promise<string>
-  ]);
-  return { feeBps: Number(feeBps), controller: getAddress(controller) };
+export async function readAccountId(address: string, runner: ContractRunner = readProvider): Promise<string> {
+  return await kernelContract(runner).getFunction("eoaAccountId").staticCall(getAddress(address)) as string;
 }
 
-export async function readAccountId(address: string): Promise<string> {
-  return await kernelContract().getFunction("eoaAccountId").staticCall(getAddress(address)) as string;
-}
-
-async function vmRead(target: string, signature: string, inputTypes: readonly string[] = [], values: readonly unknown[] = [], limit = 3_000) {
+async function vmRead(target: string, signature: string, inputTypes: readonly string[] = [], values: readonly unknown[] = [], limit = 3_000, caller?: string | null) {
   requireProtocol();
   if (!/^0x[0-9a-fA-F]{64}$/.test(target)) throw new Error("Enter a valid 32-byte Mini Contract address.");
   const encoded = inputTypes.length ? abi.encode([...inputTypes], [...values]) : "0x";
   const payload = `${id(signature).slice(0, 10)}${encoded.slice(2)}`;
-  const [output, bytesUsed] = await kernelContract().getFunction("staticCall").staticCall(SWAPVM.worldId, target, payload, limit) as [string, bigint];
+  const overrides = caller ? { from: getAddress(caller) } : {};
+  const [output, bytesUsed] = await kernelContract().getFunction("staticCall").staticCall(SWAPVM.worldId, target, payload, limit, overrides) as [string, bigint];
   return { output, bytesUsed };
-}
-
-async function readUint(target: string, signature: string, inputTypes: readonly string[] = [], values: readonly unknown[] = []): Promise<bigint> {
-  const { output } = await vmRead(target, signature, inputTypes, values);
-  return abi.decode(["uint256"], output)[0] as bigint;
-}
-
-async function readText(target: string, signature: string): Promise<string> {
-  const { output } = await vmRead(target, signature);
-  return decodeBytes32String(abi.decode(["bytes32"], output)[0] as string);
-}
-
-export async function readTokenSnapshot(target: string): Promise<TokenSnapshot> {
-  const [name, symbol, decimals, mintAmount, cap, totalSupply] = await Promise.all([
-    readText(target, "name()"),
-    readText(target, "symbol()"),
-    readUint(target, "decimals()"),
-    readUint(target, "mintAmount()"),
-    readUint(target, "cap()"),
-    readUint(target, "totalSupply()")
-  ]);
-  return { name, symbol, decimals: Number(decimals), mintAmount, cap, totalSupply };
-}
-
-export function validateOpenMintSRC20Snapshot(snapshot: TokenSnapshot): void {
-  if (!snapshot.name.trim() || !snapshot.symbol.trim()) throw new Error("This SRC20 does not expose valid token metadata.");
-  if (snapshot.decimals !== 18) throw new Error("This SRC20 does not use the supported 18-decimal interface.");
-  if (snapshot.cap <= 0n || snapshot.mintAmount <= 0n || snapshot.mintAmount > snapshot.cap) {
-    throw new Error("This SRC20 does not expose valid public mint parameters.");
-  }
-  if (snapshot.totalSupply < 0n || snapshot.totalSupply > snapshot.cap) {
-    throw new Error("This SRC20 reports an invalid supply state.");
-  }
-}
-
-export async function verifyOpenMintSRC20(target: string): Promise<TokenSnapshot> {
-  if (!/^0x[0-9a-fA-F]{64}$/.test(target)) throw new Error("Enter a valid 32-byte contract address.");
-  const codeHash = await kernelContract().getFunction("programCodeHash").staticCall(SWAPVM.worldId, target) as string;
-  if (codeHash.toLowerCase() !== SWAPVM.openMintSRC20CodeHash.toLowerCase()) {
-    throw new Error("This contract is not a Swaputer OpenMint SRC20.");
-  }
-  const snapshot = await readTokenSnapshot(target);
-  validateOpenMintSRC20Snapshot(snapshot);
-  return snapshot;
 }
 
 export const VM_ACTION_TYPES: Record<string, Array<{ name: string; type: string }>> = {
@@ -185,8 +128,8 @@ async function signedEnvelope(
   if (executionRoute === "universal-router") requireDirectProtocol();
   else requireProtocol();
   const actor = getAddress(actorAddress);
-  const actorId = await readAccountId(actor);
-  const nonce = await kernelContract().getFunction("nonces").staticCall(SWAPVM.worldId, actorId) as bigint;
+  const actorId = await readAccountId(actor, signer);
+  const nonce = await kernelContract(signer).getFunction("nonces").staticCall(SWAPVM.worldId, actorId) as bigint;
   const deadline = BigInt(Math.floor(Date.now() / 1_000) + 20 * 60);
   const vmInput = options.exactEthAmountIn ?? SWAPVM.vmInputWei!;
   const binding = resolveVMExecutionBinding(
@@ -258,17 +201,49 @@ async function executeDirectSVMEnvelope(
     deadline,
     { value: swap.value }
   );
-  return confirmed(transaction, onSubmitted);
+  return waitForConfirmation(transaction, onSubmitted);
 }
 
-export async function readMiniUint(target: string, signature: string, inputTypes: readonly string[] = [], values: readonly unknown[] = []): Promise<bigint> {
-  return readUint(target, signature, inputTypes, values);
+export class TransactionStatusUnknownError extends Error {
+  readonly transactionHash: string;
+  constructor(transactionHash: string, cause?: unknown) {
+    super(`Transaction ${transactionHash} was submitted, but its confirmation status could not be checked. Inspect it in Explorer before retrying.`, { cause });
+    this.name = "TransactionStatusUnknownError";
+    this.transactionHash = transactionHash;
+  }
 }
 
-async function confirmed(transaction: { hash: string; wait(): Promise<ContractTransactionReceipt | null> }, onSubmitted?: (hash: string) => void) {
+export function isTransactionStatusUnknown(error: unknown): error is TransactionStatusUnknownError {
+  return error instanceof TransactionStatusUnknownError;
+}
+
+export async function waitForConfirmation(transaction: { hash: string; wait(): Promise<ContractTransactionReceipt | null> }, onSubmitted?: (hash: string) => void) {
   onSubmitted?.(transaction.hash);
-  const receipt = await transaction.wait();
-  if (!receipt || receipt.status !== 1) throw new Error("The transaction was not confirmed successfully.");
+  let receipt: ContractTransactionReceipt | null;
+  try {
+    receipt = await transaction.wait();
+  } catch (cause) {
+    if (cause instanceof TransactionStatusUnknownError) throw cause;
+    const replacement = cause as {
+      code?: string;
+      cancelled?: boolean;
+      replacement?: { hash?: string };
+      receipt?: ContractTransactionReceipt | null;
+    };
+    if (replacement.code === "TRANSACTION_REPLACED") {
+      if (!replacement.cancelled && replacement.receipt?.status === 1) {
+        const replacementHash = replacement.replacement?.hash || replacement.receipt.hash;
+        if (replacementHash && replacementHash !== transaction.hash) onSubmitted?.(replacementHash);
+        return replacement.receipt;
+      }
+      if (replacement.cancelled) throw new Error("The transaction was cancelled in the wallet.");
+      if (replacement.receipt?.status === 0) throw new Error("The replacement transaction was confirmed but failed.");
+    }
+    if (replacement.receipt?.status === 0) throw new Error("The transaction was confirmed but failed.");
+    throw new TransactionStatusUnknownError(replacement.replacement?.hash || transaction.hash, cause);
+  }
+  if (!receipt) throw new TransactionStatusUnknownError(transaction.hash);
+  if (receipt.status !== 1) throw new Error("The transaction was confirmed but failed.");
   return receipt;
 }
 
@@ -288,76 +263,19 @@ export async function writeMiniContract(
   return executeDirectSVMEnvelope(signer, envelope, vmInput, deadline, onSubmitted);
 }
 
-export async function readMiniContract(target: string, signature: string, inputTypes: readonly string[], outputTypes: readonly string[], values: readonly unknown[]) {
-  const { output, bytesUsed } = await vmRead(target, signature, inputTypes, values, 20_000);
+export async function readMiniContract(target: string, signature: string, inputTypes: readonly string[], outputTypes: readonly string[], values: readonly unknown[], caller?: string | null) {
+  const { output, bytesUsed } = await vmRead(target, signature, inputTypes, values, 20_000, caller);
   const decoded = outputTypes.length ? abi.decode([...outputTypes], output) : [];
   return { values: Array.from(decoded).map((item) => typeof item === "bigint" ? item.toString() : String(item)), bytesUsed };
-}
-
-export async function mintSRC20(signer: Signer, actor: string, target: string, onSubmitted?: (hash: string) => void) {
-  const accountId = await readAccountId(actor);
-  return writeMiniContract(signer, actor, target, "mint(bytes32)", ["bytes32"], [accountId], 2_000, onSubmitted);
-}
-
-function vault(runner: ContractRunner = readProvider): Contract {
-  if (!SETH.enabled || !isAddress(SETH.vaultAddress)) throw new Error("The mainnet sETH bridge is not configured for this build.");
-  return new Contract(getAddress(SETH.vaultAddress), SETH_VAULT_ABI, runner);
-}
-
-async function verifyBridgeBindings(contract: Contract): Promise<void> {
-  const [router, kernel, worldId, seth, codeHash] = await Promise.all([
-    contract.getFunction("router").staticCall() as Promise<string>, contract.getFunction("kernel").staticCall() as Promise<string>,
-    contract.getFunction("worldId").staticCall() as Promise<string>, contract.getFunction("seth").staticCall() as Promise<string>,
-    contract.getFunction("sethCodeHash").staticCall() as Promise<string>
-  ]);
-  if (getAddress(router) !== getAddress(SWAPVM.router) || getAddress(kernel) !== getAddress(SWAPVM.kernel)
-    || worldId.toLowerCase() !== SWAPVM.worldId.toLowerCase() || seth.toLowerCase() !== SETH.programId.toLowerCase()
-    || codeHash.toLowerCase() !== SETH.codeHash.toLowerCase()) throw new Error("The configured sETH vault does not match this Swaputer release.");
-}
-
-export async function readBridgeSnapshot(address?: string | null): Promise<BridgeSnapshot> {
-  const contract = vault();
-  await verifyBridgeBindings(contract);
-  const accountId = address ? await readAccountId(address) : null;
-  const [balance, totalSupply, lockedEth, backingSurplus, solvent] = await Promise.all([
-    accountId ? readUint(SETH.programId, "balanceOf(bytes32)", ["bytes32"], [accountId]) : 0n,
-    readUint(SETH.programId, "totalSupply()"),
-    contract.getFunction("lockedEth").staticCall() as Promise<bigint>,
-    contract.getFunction("backingSurplus").staticCall() as Promise<bigint>,
-    contract.getFunction("isSolvent").staticCall() as Promise<boolean>
-  ]);
-  return { balance, totalSupply, lockedEth, backingSurplus, solvent };
-}
-
-export async function bridgeETH(
-  direction: "deposit" | "redeem", signer: Signer, actorAddress: string, recipientAddress: string,
-  amount: bigint, vmInput: bigint, onSubmitted?: (hash: string) => void
-): Promise<ContractTransactionReceipt> {
-  if (amount <= 0n || vmInput <= 0n) throw new Error("Enter an amount greater than zero.");
-  const actor = getAddress(actorAddress);
-  const recipient = getAddress(recipientAddress);
-  if (recipient === ZeroAddress) throw new Error("The recipient cannot be the zero address.");
-  const contract = vault(signer);
-  await verifyBridgeBindings(contract);
-  const payload = direction === "deposit"
-    ? `${id("bridgeMint(bytes32,uint256)").slice(0, 10)}${abi.encode(["bytes32", "uint256"], [await readAccountId(recipient), amount]).slice(2)}`
-    : `${id("bridgeBurn(uint256)").slice(0, 10)}${abi.encode(["uint256"], [amount]).slice(2)}`;
-  const { envelope } = await signedCallEnvelope(signer, actor, SETH.programId, payload, {
-    recipient,
-    authorizedExecutor: getAddress(SETH.vaultAddress),
-    exactEthAmountIn: vmInput,
-    byteGasLimit: SETH.byteGasLimit,
-    executionRoute: "swaputer-router"
-  });
-  const tx = direction === "deposit"
-    ? await contract.getFunction("deposit")(amount, vmInput, envelope, SWAPVM.sqrtPriceLimitX96!, { value: amount + vmInput })
-    : await contract.getFunction("redeem")(amount, vmInput, recipient, envelope, SWAPVM.sqrtPriceLimitX96!, { value: vmInput });
-  return confirmed(tx, onSubmitted);
 }
 
 const PACKAGE_HEADER_BYTES = 44;
 export interface PackageInspection { readonly packageHex: string; readonly packageLength: number; readonly codeLength: number; readonly codeHash: string; readonly abiHash: string }
 export interface DeploymentPreview { readonly actorId: string; readonly creatorNonce: bigint; readonly programId: string; readonly codeHash: string }
+export interface DeploymentConfirmation extends DeploymentPreview {
+  readonly confirmedProgramId: string | null;
+  readonly receipt: ContractTransactionReceipt;
+}
 
 function readU16(bytes: Uint8Array, offset: number): number { return (bytes[offset]! << 8) | bytes[offset + 1]!; }
 export function inspectPackage(input: Uint8Array): PackageInspection {
@@ -368,20 +286,43 @@ export function inspectPackage(input: Uint8Array): PackageInspection {
   return { packageHex: hexlify(bytes), packageLength: bytes.length, codeLength, abiHash: hexlify(bytes.slice(12, 44)), codeHash: keccak256(bytes) };
 }
 
-export async function previewDeployment(actorAddress: string, packageBytes: Uint8Array): Promise<DeploymentPreview> {
+export async function previewDeployment(actorAddress: string, packageBytes: Uint8Array, runner: ContractRunner = readProvider): Promise<DeploymentPreview> {
   const inspected = inspectPackage(packageBytes);
-  const actorId = await readAccountId(actorAddress);
-  const creatorNonce = await kernelContract().getFunction("creatorNonce").staticCall(SWAPVM.worldId, actorId) as bigint;
-  const programId = await kernelContract().getFunction("contractAccountId").staticCall(SWAPVM.worldId, actorId, creatorNonce, inspected.codeHash) as string;
+  const actorId = await readAccountId(actorAddress, runner);
+  const creatorNonce = await kernelContract(runner).getFunction("creatorNonce").staticCall(SWAPVM.worldId, actorId) as bigint;
+  const programId = await kernelContract(runner).getFunction("contractAccountId").staticCall(SWAPVM.worldId, actorId, creatorNonce, inspected.codeHash) as string;
   return { actorId, creatorNonce, programId, codeHash: inspected.codeHash };
+}
+
+function deploymentFromReceipt(receipt: ContractTransactionReceipt, expectedCodeHash: string): string | null {
+  const expectedKernel = SWAPVM.kernel.toLowerCase();
+  const expectedWorld = SWAPVM.worldId.toLowerCase();
+  const expectedHash = expectedCodeHash.toLowerCase();
+  for (const log of receipt.logs ?? []) {
+    if (log.address.toLowerCase() !== expectedKernel) continue;
+    try {
+      const parsed = kernelInterface.parseLog({ topics: [...log.topics], data: log.data });
+      if (!parsed || parsed.name !== "Events" || String(parsed.args[0]).toLowerCase() !== expectedWorld) continue;
+      const decoded = decodeVMReceipt(String(parsed.args[2]) as `0x${string}`);
+      const rootTarget = decoded.worldExecution.rootTarget.toLowerCase();
+      const deployment = decoded.records.find((record) => record.kind === "miniContractDeployed"
+        && record.decoded.contractId.toLowerCase() === rootTarget
+        && record.decoded.codeHash.toLowerCase() === expectedHash);
+      if (deployment?.kind === "miniContractDeployed") return deployment.decoded.contractId;
+    } catch {
+      // The receipt can include unrelated Kernel logs. Only a fully decoded,
+      // matching root deployment is authoritative for the deployed program ID.
+    }
+  }
+  return null;
 }
 
 export async function deployMiniContract(
   signer: Signer, actorAddress: string, packageBytes: Uint8Array, constructorArgs = "0x", byteGasLimit = 20_000,
   onSubmitted?: (hash: string) => void
-): Promise<DeploymentPreview & { readonly receipt: ContractTransactionReceipt }> {
+): Promise<DeploymentConfirmation> {
   requireProtocol();
-  const preview = await previewDeployment(actorAddress, packageBytes);
+  const preview = await previewDeployment(actorAddress, packageBytes, signer);
   const compactArgs = constructorArgs.trim() || "0x";
   if (!/^0x(?:[0-9a-fA-F]{2})*$/.test(compactArgs)) throw new Error("Constructor arguments must be complete hexadecimal bytes.");
   const inspected = inspectPackage(packageBytes);
@@ -396,7 +337,5 @@ export async function deployMiniContract(
     { byteGasLimit }
   );
   const receipt = await executeDirectSVMEnvelope(signer, envelope, vmInput, deadline, onSubmitted);
-  const installed = await kernelContract().getFunction("programCodeHash").staticCall(SWAPVM.worldId, preview.programId) as string;
-  if (installed === ZeroHash || installed.toLowerCase() !== preview.codeHash.toLowerCase()) throw new Error("The deployed package could not be verified.");
-  return { ...preview, receipt };
+  return { ...preview, confirmedProgramId: deploymentFromReceipt(receipt, preview.codeHash), receipt };
 }

@@ -26,23 +26,23 @@ const language = StreamLanguage.define({
 
 const highlight = HighlightStyle.define([
   { tag: tags.keyword, color: "#ff5bd0" },
-  { tag: tags.number, color: "#f2bd4b" },
-  { tag: tags.comment, color: "#74747c", fontStyle: "italic" },
-  { tag: tags.operator, color: "#d1d1d5" },
-  { tag: tags.special(tags.variableName), color: "#7fb7ff" },
-  { tag: tags.variableName, color: "#f4f4f5" }
+  { tag: tags.number, color: "#f5c15b" },
+  { tag: tags.comment, color: "#676a73", fontStyle: "italic" },
+  { tag: tags.operator, color: "#d9d9dd" },
+  { tag: tags.special(tags.variableName), color: "#6fc7ff" },
+  { tag: tags.variableName, color: "#eeeef1" }
 ]);
 
 const theme = EditorView.theme({
-  "&": { height: "100%", backgroundColor: "#101011", color: "#f4f4f5", fontSize: "13px" },
-  ".cm-content": { padding: "14px 0 64px", caretColor: "#ff37c7", fontFamily: "var(--font-mono)", lineHeight: "1.72" },
-  ".cm-line": { padding: "0 20px" },
-  ".cm-gutters": { backgroundColor: "#101011", color: "#66666d", border: "0", paddingLeft: "8px" },
-  ".cm-activeLine": { backgroundColor: "rgba(255,255,255,.045)" },
+  "&": { height: "100%", backgroundColor: "#0f1012", color: "#eeeef1", fontSize: "13px" },
+  ".cm-content": { padding: "15px 0 72px", caretColor: "#ff37c7", fontFamily: "var(--font-mono)", lineHeight: "1.66" },
+  ".cm-line": { padding: "0 18px" },
+  ".cm-gutters": { backgroundColor: "#0f1012", color: "#5d5f68", borderRight: "1px solid #24252b", paddingLeft: "7px", paddingRight: "4px" },
+  ".cm-activeLine": { backgroundColor: "rgba(255,255,255,.038)" },
   ".cm-activeLineGutter": { backgroundColor: "transparent", color: "#fff" },
-  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "rgba(255,55,199,.25) !important" },
+  ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "rgba(255,55,199,.22) !important" },
   ".cm-cursor": { borderLeftColor: "#ff37c7" },
-  ".cm-scroller": { overflow: "auto" },
+  ".cm-scroller": { overflow: "auto", fontFamily: "var(--font-mono)" },
   "&.cm-focused": { outline: "none" }
 });
 
