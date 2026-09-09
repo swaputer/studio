@@ -1,6 +1,11 @@
 import { expect, test, type Page } from "@playwright/test";
 import { AbiCoder } from "ethers";
 
+const configuredRpcUrl = new URL(process.env.VITE_RPC_URL || "https://base-sepolia-rpc.publicnode.com");
+const isConfiguredRpc = (url: URL) => (
+  url.origin === configuredRpcUrl.origin && url.pathname === configuredRpcUrl.pathname
+);
+
 async function installWallet(page: Page) {
   await page.addInitScript(() => {
     const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
@@ -118,7 +123,7 @@ test("switching files discards a read that finishes for the previous source", as
   let markRequested!: () => void;
   const released = new Promise<void>((resolve) => { releaseRpc = resolve; });
   const requested = new Promise<void>((resolve) => { markRequested = resolve; });
-  await page.route("https://base-sepolia-rpc.publicnode.com/**", async (route) => {
+  await page.route(isConfiguredRpc, async (route) => {
     markRequested();
     await released;
     const body = route.request().postDataJSON() as { id: number; jsonrpc: string };
@@ -146,7 +151,7 @@ test("changing the target discards stale reads and keeps every function locked u
   let markRequested!: () => void;
   const released = new Promise<void>((resolve) => { releaseRpc = resolve; });
   const requested = new Promise<void>((resolve) => { markRequested = resolve; });
-  await page.route("https://base-sepolia-rpc.publicnode.com/**", async (route) => {
+  await page.route(isConfiguredRpc, async (route) => {
     markRequested();
     await released;
     const body = route.request().postDataJSON() as { id: number; jsonrpc: string };
