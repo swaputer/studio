@@ -15,7 +15,8 @@ import {
   type Signer
 } from "ethers";
 import { decodeVMReceipt } from "@swaputer-labs/receipt-codec";
-import { KERNEL_ABI, NETWORK, SWAPVM } from "./config";
+import { KERNEL_ABI, NETWORK, SWAPVM, TRANSACTION_CONFIRMATIONS } from "./config";
+import { assertCanonicalTransactionReceipt } from "./transactionFinality";
 import {
   UNIVERSAL_ROUTER_ABI,
   encodeDirectSVMUniversalRouterSwap,
@@ -217,11 +218,19 @@ export function isTransactionStatusUnknown(error: unknown): error is Transaction
   return error instanceof TransactionStatusUnknownError;
 }
 
-export async function waitForConfirmation(transaction: { hash: string; wait(): Promise<ContractTransactionReceipt | null> }, onSubmitted?: (hash: string) => void) {
+async function requireCanonicalConfirmation(receipt: ContractTransactionReceipt): Promise<ContractTransactionReceipt> {
+  try {
+    return await assertCanonicalTransactionReceipt(receipt, TRANSACTION_CONFIRMATIONS);
+  } catch (cause) {
+    throw new TransactionStatusUnknownError(receipt.hash, cause);
+  }
+}
+
+export async function waitForConfirmation(transaction: { hash: string; wait(confirmations?: number): Promise<ContractTransactionReceipt | null> }, onSubmitted?: (hash: string) => void) {
   onSubmitted?.(transaction.hash);
   let receipt: ContractTransactionReceipt | null;
   try {
-    receipt = await transaction.wait();
+    receipt = await transaction.wait(TRANSACTION_CONFIRMATIONS);
   } catch (cause) {
     if (cause instanceof TransactionStatusUnknownError) throw cause;
     const replacement = cause as {
@@ -234,7 +243,7 @@ export async function waitForConfirmation(transaction: { hash: string; wait(): P
       if (!replacement.cancelled && replacement.receipt?.status === 1) {
         const replacementHash = replacement.replacement?.hash || replacement.receipt.hash;
         if (replacementHash && replacementHash !== transaction.hash) onSubmitted?.(replacementHash);
-        return replacement.receipt;
+        return requireCanonicalConfirmation(replacement.receipt);
       }
       if (replacement.cancelled) throw new Error("The transaction was cancelled in the wallet.");
       if (replacement.receipt?.status === 0) throw new Error("The replacement transaction was confirmed but failed.");
@@ -244,7 +253,7 @@ export async function waitForConfirmation(transaction: { hash: string; wait(): P
   }
   if (!receipt) throw new TransactionStatusUnknownError(transaction.hash);
   if (receipt.status !== 1) throw new Error("The transaction was confirmed but failed.");
-  return receipt;
+  return requireCanonicalConfirmation(receipt);
 }
 
 export async function writeMiniContract(

@@ -10,6 +10,12 @@ const candidateRelease = activeRelease as typeof activeRelease & {
   readonly upstream?: { readonly uniswapV4?: UniswapV4Release };
 };
 
+const configuredConfirmations = Number(activeRelease.indexer.confirmations);
+if (!Number.isSafeInteger(configuredConfirmations) || configuredConfirmations < 12) {
+  throw new Error("The active release must require at least 12 transaction confirmations.");
+}
+export const TRANSACTION_CONFIRMATIONS = configuredConfirmations;
+
 const value = (name: string): string => String(import.meta.env[name] ?? "").trim();
 export const PROTOCOL_EXPLORER_URL = value("VITE_PROTOCOL_EXPLORER_URL") || "http://127.0.0.1:4174";
 const pinned = (name: string, expected: string): string => {

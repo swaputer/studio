@@ -7,7 +7,7 @@ import {
 import CodeEditor from "@/components/CodeEditor.vue";
 import { useWallet } from "@/composables/useWallet";
 import { toast } from "@/composables/useToast";
-import { NETWORK, PROTOCOL_EXPLORER_URL } from "@/lib/config";
+import { NETWORK, PROTOCOL_EXPLORER_URL, TRANSACTION_CONFIRMATIONS } from "@/lib/config";
 import { deployMiniContract, friendlyError, isTransactionStatusUnknown, readMiniContract, short, writeMiniContract } from "@/lib/protocol";
 import {
   EMPTY_CONTRACT,
@@ -376,7 +376,7 @@ async function invoke(fn: StudioFunction) {
     } else {
       const receipt = await writeMiniContract(signer!, address!, target, fn.signature, fn.inputs, args, Number(byteGasLimit.value), (hash: string) => {
         addConsole(`${fn.signature} submitted · ${short(hash, 10, 8)}`);
-        if (isCurrent()) functionResults.value[fn.selector] = `Pending · ${short(hash, 10, 8)}`;
+        if (isCurrent()) functionResults.value[fn.selector] = `Finalizing · ${TRANSACTION_CONFIRMATIONS} confirms · ${short(hash, 10, 8)}`;
       });
       if (isCurrent()) {
         functionResults.value[fn.selector] = `Confirmed · block ${receipt.blockNumber}`;
@@ -566,7 +566,7 @@ onBeforeUnmount(() => {
             <label class="encoded-args"><span>Encoded constructor data</span><textarea :value="encodedConstructor.error || encodedConstructor.value" readonly /></label>
             <label class="gas-input"><span>Byte gas limit</span><input v-model="byteGasLimit" inputmode="numeric" /></label>
             <dl class="deploy-summary"><div><dt>Network</dt><dd>{{ NETWORK.displayName }}</dd></div><div><dt>Wallet</dt><dd>{{ wallet.address.value ? short(wallet.address.value) : 'Not connected' }}</dd></div></dl>
-            <button class="inspector-primary" type="button" :disabled="deploymentInFlight || functionInFlight || chainActionInFlight || !build" @click="deploy"><LoaderCircle v-if="deploymentInFlight" class="spin" :size="17" />{{ !wallet.address.value ? 'Connect wallet' : deployPhase === 'signing' ? 'Confirm signature' : deployPhase === 'pending' ? 'Deploying' : deployPhase === 'unknown' ? 'Check in Explorer' : 'Deploy contract' }}</button>
+            <button class="inspector-primary" type="button" :disabled="deploymentInFlight || functionInFlight || chainActionInFlight || !build" @click="deploy"><LoaderCircle v-if="deploymentInFlight" class="spin" :size="17" />{{ !wallet.address.value ? 'Connect wallet' : deployPhase === 'signing' ? 'Confirm signature' : deployPhase === 'pending' ? `Finalizing · ${TRANSACTION_CONFIRMATIONS}` : deployPhase === 'unknown' ? 'Check in Explorer' : 'Deploy contract' }}</button>
           </div>
 
           <div v-else class="inspector-body interact-panel">
