@@ -11,8 +11,8 @@ const candidateRelease = activeRelease as typeof activeRelease & {
 };
 
 const configuredConfirmations = Number(activeRelease.indexer.confirmations);
-if (!Number.isSafeInteger(configuredConfirmations) || configuredConfirmations < 12) {
-  throw new Error("The active release must require at least 12 transaction confirmations.");
+if (!Number.isSafeInteger(configuredConfirmations) || configuredConfirmations < 1) {
+  throw new Error("The active release must require at least one transaction confirmation.");
 }
 export const TRANSACTION_CONFIRMATIONS = configuredConfirmations;
 

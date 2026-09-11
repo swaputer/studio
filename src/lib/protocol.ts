@@ -16,7 +16,6 @@ import {
 } from "ethers";
 import { decodeVMReceipt } from "@swaputer-labs/receipt-codec";
 import { KERNEL_ABI, NETWORK, SWAPVM, TRANSACTION_CONFIRMATIONS } from "./config";
-import { assertCanonicalTransactionReceipt } from "./transactionFinality";
 import {
   UNIVERSAL_ROUTER_ABI,
   encodeDirectSVMUniversalRouterSwap,
@@ -30,7 +29,12 @@ const abi = AbiCoder.defaultAbiCoder();
 const kernelInterface = new Interface(KERNEL_ABI);
 export const readProvider = new JsonRpcProvider(NETWORK.rpcUrl, NETWORK.chainId, { staticNetwork: true });
 
-export interface WalletConnection { readonly provider: BrowserProvider; readonly signer: Signer; readonly address: string }
+export interface WalletConnection {
+  readonly provider: BrowserProvider;
+  readonly signer: Signer;
+  readonly address: string;
+  readonly chainId: bigint;
+}
 
 export function friendlyError(error: unknown): string {
   if (error instanceof Error) {
@@ -44,27 +48,28 @@ export function short(value: string, start = 6, end = 4): string {
   return value ? `${value.slice(0, start)}…${value.slice(-end)}` : "—";
 }
 
-export async function connectWallet(): Promise<WalletConnection> {
+export async function connectWallet(requestAccounts = true): Promise<WalletConnection> {
   if (!window.ethereum) throw new Error("No compatible browser wallet was detected.");
   const provider = new BrowserProvider(window.ethereum);
-  await provider.send("eth_requestAccounts", []);
+  if (requestAccounts) await provider.send("eth_requestAccounts", []);
   const network = await provider.getNetwork();
-  if (network.chainId !== BigInt(NETWORK.chainId)) {
-    try {
-      await provider.send("wallet_switchEthereumChain", [{ chainId: NETWORK.chainIdHex }]);
-    } catch (error) {
-      if ((error as { code?: number }).code !== 4902) throw error;
-      await provider.send("wallet_addEthereumChain", [{
-        chainId: NETWORK.chainIdHex,
-        chainName: NETWORK.chainName,
-        nativeCurrency: NETWORK.nativeCurrency,
-        rpcUrls: [NETWORK.rpcUrl],
-        blockExplorerUrls: [NETWORK.explorerUrl]
-      }]);
-    }
-  }
   const signer = await provider.getSigner();
-  return { provider, signer, address: await signer.getAddress() };
+  return { provider, signer, address: await signer.getAddress(), chainId: network.chainId };
+}
+
+export async function switchWalletToSupportedNetwork(provider: BrowserProvider): Promise<void> {
+  try {
+    await provider.send("wallet_switchEthereumChain", [{ chainId: NETWORK.chainIdHex }]);
+  } catch (error) {
+    if ((error as { code?: number }).code !== 4902) throw error;
+    await provider.send("wallet_addEthereumChain", [{
+      chainId: NETWORK.chainIdHex,
+      chainName: NETWORK.chainName,
+      nativeCurrency: NETWORK.nativeCurrency,
+      rpcUrls: [NETWORK.rpcUrl],
+      blockExplorerUrls: [NETWORK.explorerUrl]
+    }]);
+  }
 }
 
 function requireProtocol(): void {
@@ -87,13 +92,13 @@ export async function readAccountId(address: string, runner: ContractRunner = re
   return await kernelContract(runner).getFunction("eoaAccountId").staticCall(getAddress(address)) as string;
 }
 
-async function vmRead(target: string, signature: string, inputTypes: readonly string[] = [], values: readonly unknown[] = [], limit = 3_000, caller?: string | null) {
+async function vmRead(target: string, signature: string, inputTypes: readonly string[] = [], values: readonly unknown[] = [], limit = 3_000, caller?: string | null, runner: ContractRunner = readProvider) {
   requireProtocol();
   if (!/^0x[0-9a-fA-F]{64}$/.test(target)) throw new Error("Enter a valid 32-byte Mini Contract address.");
   const encoded = inputTypes.length ? abi.encode([...inputTypes], [...values]) : "0x";
   const payload = `${id(signature).slice(0, 10)}${encoded.slice(2)}`;
   const overrides = caller ? { from: getAddress(caller) } : {};
-  const [output, bytesUsed] = await kernelContract().getFunction("staticCall").staticCall(SWAPVM.worldId, target, payload, limit, overrides) as [string, bigint];
+  const [output, bytesUsed] = await kernelContract(runner).getFunction("staticCall").staticCall(SWAPVM.worldId, target, payload, limit, overrides) as [string, bigint];
   return { output, bytesUsed };
 }
 
@@ -218,14 +223,6 @@ export function isTransactionStatusUnknown(error: unknown): error is Transaction
   return error instanceof TransactionStatusUnknownError;
 }
 
-async function requireCanonicalConfirmation(receipt: ContractTransactionReceipt): Promise<ContractTransactionReceipt> {
-  try {
-    return await assertCanonicalTransactionReceipt(receipt, TRANSACTION_CONFIRMATIONS);
-  } catch (cause) {
-    throw new TransactionStatusUnknownError(receipt.hash, cause);
-  }
-}
-
 export async function waitForConfirmation(transaction: { hash: string; wait(confirmations?: number): Promise<ContractTransactionReceipt | null> }, onSubmitted?: (hash: string) => void) {
   onSubmitted?.(transaction.hash);
   let receipt: ContractTransactionReceipt | null;
@@ -243,7 +240,7 @@ export async function waitForConfirmation(transaction: { hash: string; wait(conf
       if (!replacement.cancelled && replacement.receipt?.status === 1) {
         const replacementHash = replacement.replacement?.hash || replacement.receipt.hash;
         if (replacementHash && replacementHash !== transaction.hash) onSubmitted?.(replacementHash);
-        return requireCanonicalConfirmation(replacement.receipt);
+        return replacement.receipt;
       }
       if (replacement.cancelled) throw new Error("The transaction was cancelled in the wallet.");
       if (replacement.receipt?.status === 0) throw new Error("The replacement transaction was confirmed but failed.");
@@ -253,7 +250,7 @@ export async function waitForConfirmation(transaction: { hash: string; wait(conf
   }
   if (!receipt) throw new TransactionStatusUnknownError(transaction.hash);
   if (receipt.status !== 1) throw new Error("The transaction was confirmed but failed.");
-  return requireCanonicalConfirmation(receipt);
+  return receipt;
 }
 
 export async function writeMiniContract(
@@ -272,8 +269,8 @@ export async function writeMiniContract(
   return executeDirectSVMEnvelope(signer, envelope, vmInput, deadline, onSubmitted);
 }
 
-export async function readMiniContract(target: string, signature: string, inputTypes: readonly string[], outputTypes: readonly string[], values: readonly unknown[], caller?: string | null) {
-  const { output, bytesUsed } = await vmRead(target, signature, inputTypes, values, 20_000, caller);
+export async function readMiniContract(target: string, signature: string, inputTypes: readonly string[], outputTypes: readonly string[], values: readonly unknown[], caller?: string | null, runner: ContractRunner = readProvider) {
+  const { output, bytesUsed } = await vmRead(target, signature, inputTypes, values, 20_000, caller, runner);
   const decoded = outputTypes.length ? abi.decode([...outputTypes], output) : [];
   return { values: Array.from(decoded).map((item) => typeof item === "bigint" ? item.toString() : String(item)), bytesUsed };
 }

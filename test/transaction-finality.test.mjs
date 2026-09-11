@@ -53,11 +53,11 @@ test("rejects orphaned receipts, containing blocks and transaction links", async
   );
 });
 
-test("Studio waits for the manifest confirmation count before revalidation", () => {
+test("Studio waits for the manifest confirmation count without a second RPC recheck", () => {
   const protocol = readFileSync(new URL("../src/lib/protocol.ts", import.meta.url), "utf8");
   const config = readFileSync(new URL("../src/lib/config.ts", import.meta.url), "utf8");
   assert.match(protocol, /transaction\.wait\(TRANSACTION_CONFIRMATIONS\)/);
-  assert.match(protocol, /assertCanonicalTransactionReceipt\(receipt, TRANSACTION_CONFIRMATIONS\)/);
+  assert.doesNotMatch(protocol, /assertCanonicalTransactionReceipt/);
   assert.match(config, /activeRelease\.indexer\.confirmations/);
-  assert.match(config, /configuredConfirmations < 12/);
+  assert.match(config, /configuredConfirmations < 1/);
 });

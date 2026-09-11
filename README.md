@@ -36,7 +36,7 @@ confirmed Kernel receipts are decoded with
 Wallet account or network changes invalidate the active Studio signer and
 require reconnection.
 
-Deployments and state-changing calls share one protocol-write lock. A write is shown as confirmed only after the manifest's confirmation policy has been met (12 confirmations in the bundled Base Sepolia release) and Studio has re-read the transaction, receipt and containing block to verify their canonical linkage. Studio then decodes the deployed program ID from that receipt; if an RPC cannot determine final transaction status, it keeps the full hash available for Explorer reconciliation and blocks another write until reload.
+Deployments and state-changing calls share one protocol-write lock. A write is shown as confirmed when its one-confirmation Base receipt succeeds; protocol execution is atomic, so an SVM failure reverts the outer transaction. Studio then decodes the deployed program ID from that receipt; if an RPC cannot obtain it, Studio keeps the full hash available for Explorer reconciliation and blocks another write until reload.
 
 ## Deployment
 

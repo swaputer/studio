@@ -6,16 +6,24 @@ const isConfiguredRpc = (url: URL) => (
   url.origin === configuredRpcUrl.origin && url.pathname === configuredRpcUrl.pathname
 );
 
-async function installWallet(page: Page) {
-  await page.addInitScript(() => {
+async function installWallet(page: Page, initialChainId = "0x14a34") {
+  await page.addInitScript((chainId) => {
     const listeners: Record<string, Array<(...args: unknown[]) => void>> = {};
+    let currentChainId = chainId;
+    let currentAccounts = ["0x1111111111111111111111111111111111111111"];
     (window as unknown as { __walletEvent(name: string, value: unknown): void }).__walletEvent = (name, value) => {
+      if (name === "accountsChanged") currentAccounts = value as string[];
       listeners[name]?.forEach((listener) => listener(value));
     };
     window.ethereum = {
-      request: async ({ method }) => {
-        if (method === "eth_chainId") return "0x14a34";
-        if (method === "eth_requestAccounts" || method === "eth_accounts") return ["0x1111111111111111111111111111111111111111"];
+      request: async ({ method, params }) => {
+        if (method === "eth_chainId") return currentChainId;
+        if (method === "eth_requestAccounts" || method === "eth_accounts") return currentAccounts;
+        if (method === "wallet_switchEthereumChain") {
+          currentChainId = String((params as Array<{ chainId: string }>)[0]!.chainId);
+          queueMicrotask(() => listeners.chainChanged?.forEach((listener) => listener(currentChainId)));
+          return null;
+        }
         throw new Error(`Unexpected wallet operation ${method}`);
       },
       on: (name, listener) => (listeners[name] ??= []).push(listener),
@@ -23,14 +31,14 @@ async function installWallet(page: Page) {
         listeners[name] = (listeners[name] ?? []).filter((candidate) => candidate !== listener);
       }
     };
-  });
+  }, initialChainId);
 }
 
 test("Studio compiles TinySol and exposes deployment controls", async ({ page }) => {
   await page.goto("/");
-  await expect(page.getByText("Swaputer", { exact: true })).toBeVisible();
-  await expect(page.getByText("Studio", { exact: true })).toBeVisible();
-  await expect(page.getByRole("navigation", { name: "Studio tools" })).toBeVisible();
+  await expect(page.getByText("Files", { exact: true })).toBeVisible();
+  await expect(page.getByText("Studio", { exact: true })).toHaveCount(0);
+  await expect(page.getByRole("link", { name: /Explorer/ })).toHaveCount(0);
   await expect(page.getByRole("button", { name: /Compile/ })).toBeVisible();
   await page.getByRole("button", { name: /Compile/ }).click();
   await expect(page.getByText(/Build succeeded/).first()).toBeVisible();
@@ -105,7 +113,7 @@ test("undo history cannot replace one file with another file's document", async 
   await expect(editor).not.toContainText("SecondFile");
 });
 
-test("Studio invalidates the signer when the wallet account or network changes", async ({ page }) => {
+test("Studio disconnects when the wallet account is removed", async ({ page }) => {
   await installWallet(page);
   await page.goto("/");
   const connect = page.getByRole("banner").getByRole("button", { name: "Connect wallet", exact: true });
@@ -113,7 +121,19 @@ test("Studio invalidates the signer when the wallet account or network changes",
   await expect(page.getByRole("button", { name: /0x1111/ })).toBeVisible();
   await page.evaluate(() => (window as unknown as { __walletEvent(name: string, value: unknown): void }).__walletEvent("accountsChanged", []));
   await expect(connect).toBeVisible();
-  await expect(page.getByText("Your wallet account or network changed. Reconnect before continuing.")).toBeVisible();
+});
+
+test("Studio detects an unsupported wallet network and offers a switch", async ({ page }) => {
+  await installWallet(page, "0x1");
+  await page.goto("/");
+  await page.getByRole("banner").getByRole("button", { name: "Connect wallet", exact: true }).click();
+
+  await expect(page.locator(".studio-network-warning")).toContainText("This network is not supported by Swaputer Studio.");
+  await expect(page.getByRole("button", { name: `Switch to Base Sepolia` })).toBeVisible();
+  await page.getByRole("button", { name: `Switch to Base Sepolia` }).click();
+
+  await expect(page.locator(".studio-network-warning")).toHaveCount(0);
+  await expect(page.getByRole("banner").getByRole("button", { name: /0x1111/ })).toBeVisible();
 });
 
 test("switching files discards a read that finishes for the previous source", async ({ page }) => {

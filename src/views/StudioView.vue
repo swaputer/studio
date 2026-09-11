@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import {
-  Check, ChevronDown, Code2, Copy, FileCode2, Hammer, LoaderCircle, Monitor,
+  Check, ChevronDown, Copy, FileCode2, Hammer, LoaderCircle, Monitor,
   Play, Plus, Rocket, Save, Terminal, Trash2, TriangleAlert
 } from "@lucide/vue";
 import CodeEditor from "@/components/CodeEditor.vue";
@@ -22,14 +22,15 @@ import {
 
 type InspectorTab = "build" | "deploy" | "interact";
 type BuildPhase = "idle" | "compiling" | "success" | "error";
-type ActivityMode = "code" | InspectorTab;
 type ConsoleTone = "default" | "success" | "error";
-type ConsoleEntry = { message: string; time: string; tone: ConsoleTone };
+type ConsoleLink = { kind: "tx" | "address"; value: string; label?: string };
+type ConsoleEntry = { message: string; time: string; tone: ConsoleTone; links?: ConsoleLink[] };
 type StudioFile = { id: string; name: string; source: string; saved: boolean; templateId?: string };
 type StoredFile = Omit<StudioFile, "saved"> & { saved?: boolean };
 type StoredWorkspace = { files: StoredFile[]; activeFileId: string | null };
 const LEGACY_STORAGE_KEY = "swaputer.studio.source.v1";
 const WORKSPACE_STORAGE_KEY = "swaputer.studio.workspace.v2";
+const confirmationLabel = `${TRANSACTION_CONFIRMATIONS} ${TRANSACTION_CONFIRMATIONS === 1 ? "confirmation" : "confirmations"}`;
 
 function createFileId() {
   return `file-${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -85,7 +86,6 @@ const build = ref<StudioBuild | null>(null);
 const buildPhase = ref<BuildPhase>("idle");
 const buildError = ref<string | null>(null);
 const inspectorTab = ref<InspectorTab>("deploy");
-const activityMode = ref<ActivityMode>("code");
 const consoleOpen = ref(true);
 const constructorValues = ref<string[]>([]);
 const byteGasLimit = ref("20000");
@@ -108,13 +108,30 @@ let compileRun = 0;
 let deployRun = 0;
 let functionRun = 0;
 
-function addConsole(message: string, tone: ConsoleTone = "default") {
-  consoleEntries.value.push({ message, time: new Date().toLocaleTimeString("en-GB", { hour12: false }), tone });
+const explorerUrl = PROTOCOL_EXPLORER_URL.replace(/\/$/, "");
+function explorerTxUrl(hash: string) {
+  return `${explorerUrl}/tx/${hash}`;
+}
+function explorerAddressUrl(address: string) {
+  return `${explorerUrl}/address/${address}`;
+}
+
+function addConsole(message: string, tone: ConsoleTone = "default", transaction?: string | ConsoleLink[]) {
+  const links = Array.isArray(transaction)
+    ? transaction
+    : transaction
+      ? [{ kind: "tx" as const, value: transaction }]
+      : [];
+  consoleEntries.value.push({
+    message,
+    time: new Date().toLocaleTimeString("en-GB", { hour12: false }),
+    tone,
+    links
+  });
 }
 
 function openInspector(tab: InspectorTab) {
   inspectorTab.value = tab;
-  activityMode.value = tab;
 }
 
 const tabLabel = (tab: InspectorTab) => tab.charAt(0).toUpperCase() + tab.slice(1);
@@ -256,6 +273,10 @@ async function deploy() {
     await wallet.connect();
     return;
   }
+  if (!wallet.networkSupported.value) {
+    await wallet.switchNetwork();
+    return;
+  }
   if (!build.value) { await compile(); return; }
   if (encodedConstructor.value.error) { toast.error(encodedConstructor.value.error); return; }
   const limit = Number(byteGasLimit.value);
@@ -282,7 +303,7 @@ async function deploy() {
       limit,
       (hash: string) => {
         deployPhase.value = "pending";
-        addConsole(`Deployment submitted · ${short(hash, 10, 8)}`);
+        addConsole("Deployment submitted", "default", hash);
       }
     );
     const current = run === deployRun && session === wallet.session.value;
@@ -292,7 +313,7 @@ async function deploy() {
       targetId.value = programId;
       deployPhase.value = "confirmed";
       openInspector("interact");
-      addConsole(`Deployment confirmed · ${short(programId, 12, 10)}`, "success");
+      addConsole("Deployment confirmed", "success", result.receipt.hash);
       toast.success("Mini contract deployed.");
     } else if (current) {
       keepChainLock = true;
@@ -300,7 +321,7 @@ async function deploy() {
       unresolvedTransactionHash.value = result.receipt.hash;
       deployPhase.value = "unknown";
       openInspector("interact");
-      addConsole(`Deployment transaction confirmed, but its program ID could not be decoded · ${short(result.receipt.hash, 10, 8)}`, "error");
+      addConsole("Deployment transaction confirmed, but its program ID could not be decoded", "error", result.receipt.hash);
       toast.success("Deployment confirmed. Verify its program ID in Explorer before retrying.");
     } else {
       if (programId) deployPhase.value = "idle";
@@ -310,7 +331,7 @@ async function deploy() {
         unresolvedTransactionHash.value = result.receipt.hash;
         deployPhase.value = "unknown";
       }
-      addConsole(`Deployment confirmed for a previous editor or wallet context · ${short(programId || result.receipt.hash, 12, 10)}`, "success");
+        addConsole("Deployment confirmed for a previous editor or wallet context", "success", programId ? [] : result.receipt.hash);
       toast.success("A previously started deployment was confirmed.");
     }
   } catch (cause) {
@@ -320,7 +341,7 @@ async function deploy() {
       deployPhase.value = "unknown";
       deployment.value = { programId: null, transactionHash: cause.transactionHash };
       toast.error(friendlyError(cause));
-      addConsole(`Deployment status unknown. Check Explorer before retrying · ${cause.transactionHash}`, "error");
+      addConsole("Deployment status unknown. Check Explorer before retrying", "error", cause.transactionHash);
     } else {
       deployPhase.value = "idle";
       toast.error(friendlyError(cause));
@@ -342,6 +363,10 @@ async function invoke(fn: StudioFunction) {
   if (!build.value) return;
   if (!/^0x[0-9a-fA-F]{64}$/.test(targetId.value.trim())) {
     functionResults.value[fn.selector] = "Enter a valid 32-byte Mini Contract address.";
+    return;
+  }
+  if (wallet.address.value && !wallet.networkSupported.value) {
+    await wallet.switchNetwork();
     return;
   }
   if (!fn.view && (!wallet.address.value || !wallet.signer.value)) {
@@ -369,20 +394,20 @@ async function invoke(fn: StudioFunction) {
   try {
     const args = parsedArgs(fn);
     if (fn.view) {
-      const result = await readMiniContract(target, fn.signature, fn.inputs, fn.outputs, args, wallet.address.value);
+      const result = await readMiniContract(target, fn.signature, fn.inputs, fn.outputs, args, wallet.address.value, wallet.provider.value ?? undefined);
       if (!isCurrent()) return;
       functionResults.value[fn.selector] = result.values.length ? result.values.join(", ") : `Success · ${result.bytesUsed} bytes used`;
       addConsole(`${fn.signature} called`, "success");
     } else {
       const receipt = await writeMiniContract(signer!, address!, target, fn.signature, fn.inputs, args, Number(byteGasLimit.value), (hash: string) => {
-        addConsole(`${fn.signature} submitted · ${short(hash, 10, 8)}`);
-        if (isCurrent()) functionResults.value[fn.selector] = `Finalizing · ${TRANSACTION_CONFIRMATIONS} confirms · ${short(hash, 10, 8)}`;
+        addConsole(`${fn.signature} submitted`, "default", hash);
+        if (isCurrent()) functionResults.value[fn.selector] = `Finalizing · ${confirmationLabel} · ${short(hash, 10, 8)}`;
       });
       if (isCurrent()) {
         functionResults.value[fn.selector] = `Confirmed · block ${receipt.blockNumber}`;
-        addConsole(`${fn.signature} confirmed`, "success");
+        addConsole(`${fn.signature} confirmed`, "success", receipt.hash);
       } else {
-        addConsole(`${fn.signature} confirmed for a previous target or wallet context`, "success");
+        addConsole(`${fn.signature} confirmed for a previous target or wallet context`, "success", receipt.hash);
       }
     }
   } catch (cause) {
@@ -390,7 +415,7 @@ async function invoke(fn: StudioFunction) {
       keepChainLock = true;
       unresolvedTransactionHash.value = cause.transactionHash;
       if (isCurrent()) functionResults.value[fn.selector] = friendlyError(cause);
-      addConsole(`${fn.signature} status unknown. Check Explorer before retrying · ${cause.transactionHash}`, "error");
+      addConsole(`${fn.signature} status unknown. Check Explorer before retrying`, "error", cause.transactionHash);
     } else {
       if (isCurrent()) functionResults.value[fn.selector] = friendlyError(cause);
       addConsole(`${fn.signature} failed`, "error");
@@ -494,14 +519,11 @@ onBeforeUnmount(() => {
     </section>
 
     <section v-else class="studio-desktop">
+      <div v-if="wallet.address.value && !wallet.networkSupported.value" class="studio-network-warning" role="alert">
+        <span><TriangleAlert :size="16" />This network is not supported by Swaputer Studio.</span>
+        <button type="button" :disabled="wallet.connecting.value" @click="wallet.switchNetwork">Switch to {{ NETWORK.displayName }}</button>
+      </div>
       <div class="studio-workspace">
-        <nav class="studio-activity" aria-label="Studio tools">
-          <button type="button" :class="{ active: activityMode === 'code' }" title="Code" @click="activityMode = 'code'"><Code2 :size="20" /><span>Code</span></button>
-          <button type="button" :class="{ active: activityMode === 'build' }" title="Build" @click="openInspector('build')"><Hammer :size="19" /><span>Build</span></button>
-          <button type="button" :class="{ active: activityMode === 'deploy' }" title="Deploy" @click="openInspector('deploy')"><Rocket :size="19" /><span>Deploy</span></button>
-          <button type="button" :class="{ active: activityMode === 'interact' }" title="Interact" @click="openInspector('interact')"><Play :size="19" /><span>Interact</span></button>
-        </nav>
-
         <aside class="studio-explorer">
           <div class="studio-product-title"><strong>Files</strong><button type="button" title="New file" aria-label="New file" @click="newFile"><Plus :size="17" /></button></div>
           <h2>TEMPLATES</h2>
@@ -520,16 +542,36 @@ onBeforeUnmount(() => {
           <div class="editor-toolbar">
             <div :class="['editor-file-tab', { 'editor-file-tab--empty': !activeFile }]"><FileCode2 :size="16" /><span>{{ fileName }}</span><i v-if="activeFile && !saved" title="Unsaved changes" /></div>
             <div class="editor-toolbar__actions">
-              <button type="button" :disabled="!activeFile" @click="save"><Save :size="16" />{{ saved ? 'Saved' : 'Save' }}</button>
-              <button class="compile-button" type="button" :disabled="!activeFile || buildPhase === 'compiling'" @click="compile()"><LoaderCircle v-if="buildPhase === 'compiling'" class="spin" :size="16" /><Play v-else :size="15" fill="currentColor" />Compile</button>
-              <div :class="['editor-build-state', `editor-build-state--${buildPhase}`]"><i /><span>{{ buildPhase === 'success' ? 'Compiled successfully' : buildPhase === 'compiling' ? 'Compiling source' : buildPhase === 'error' ? 'Build failed' : 'Ready to compile' }}</span></div>
+              <button type="button" :disabled="!activeFile" class="save-button" :class="{ dirty: activeFile && !saved }" @click="save">
+                <Check v-if="saved" :size="14" />
+                <Save v-else :size="16" />
+                {{ activeFile ? (saved ? "Saved" : "Save") : "Save" }}
+              </button>
+              <button class="compile-button" type="button" :disabled="!activeFile || buildPhase === 'compiling'" @click="compile()"><LoaderCircle v-if="buildPhase === 'compiling'" class="spin" :size="16" /><Play v-else :size="15" fill="currentColor" />Compile source</button>
+              <div :class="['editor-build-state', `editor-build-state--${buildPhase}`]">
+                <i /><span>{{ buildPhase === 'success' ? 'Compiled successfully' : buildPhase === 'compiling' ? 'Compiling source' : buildPhase === 'error' ? 'Build failed' : 'Ready to compile' }}</span>
+              </div>
             </div>
           </div>
           <CodeEditor v-if="activeFile" :key="activeFile.id" v-model="source" />
           <div v-else class="studio-editor-empty"><FileCode2 :size="30" /><strong>No file open</strong><span>Create a new TinySol file or open the Counter template.</span><button type="button" @click="newFile"><Plus :size="16" />New file</button></div>
           <div class="studio-console">
             <header><span><Terminal :size="14" />Console</span><div><button type="button" @click="consoleEntries = []">Clear</button><button type="button" :aria-label="consoleOpen ? 'Collapse console' : 'Expand console'" @click="consoleOpen = !consoleOpen"><ChevronDown :class="{ 'console-chevron--open': consoleOpen }" :size="16" /></button></div></header>
-            <div v-show="consoleOpen"><p v-for="(entry, index) in consoleEntries.slice(-6)" :key="`${entry.time}-${entry.message}-${index}`" :class="`console-entry--${entry.tone}`"><span class="console-entry__time">[{{ entry.time }}]</span><Check v-if="entry.tone === 'success'" :size="13" /><TriangleAlert v-else-if="entry.tone === 'error'" :size="13" /><span>{{ entry.message }}</span></p><p v-if="!consoleEntries.length" class="console-entry--empty">No console output.</p></div>
+            <div v-show="consoleOpen">
+              <p v-for="(entry, index) in consoleEntries.slice(-6)" :key="`${entry.time}-${entry.message}-${index}`" :class="`console-entry--${entry.tone}`">
+                <span class="console-entry__time">[{{ entry.time }}]</span><Check v-if="entry.tone === 'success'" :size="13" /><TriangleAlert v-else-if="entry.tone === 'error'" :size="13" />
+                <span>{{ entry.message }}</span>
+                <template v-for="(link, linkIndex) in entry.links ?? []" :key="`${entry.time}-${link.value}-${linkIndex}`">
+                  <a v-if="link.kind === 'tx'" class="console-entry__link" :href="explorerTxUrl(link.value)" target="_blank" rel="noreferrer" :title="link.value">
+                    {{ short(link.label ?? link.value, 10, 8) }}
+                  </a>
+                  <a v-else class="console-entry__link" :href="explorerAddressUrl(link.value)" target="_blank" rel="noreferrer" :title="link.value">
+                    {{ short(link.label ?? link.value, 10, 8) }}
+                  </a>
+                </template>
+              </p>
+              <p v-if="!consoleEntries.length" class="console-entry--empty">No console output.</p>
+            </div>
           </div>
         </section>
 
@@ -565,19 +607,19 @@ onBeforeUnmount(() => {
             <p v-else class="no-constructor">This contract has no constructor arguments.</p>
             <label class="encoded-args"><span>Encoded constructor data</span><textarea :value="encodedConstructor.error || encodedConstructor.value" readonly /></label>
             <label class="gas-input"><span>Byte gas limit</span><input v-model="byteGasLimit" inputmode="numeric" /></label>
-            <dl class="deploy-summary"><div><dt>Network</dt><dd>{{ NETWORK.displayName }}</dd></div><div><dt>Wallet</dt><dd>{{ wallet.address.value ? short(wallet.address.value) : 'Not connected' }}</dd></div></dl>
-            <button class="inspector-primary" type="button" :disabled="deploymentInFlight || functionInFlight || chainActionInFlight || !build" @click="deploy"><LoaderCircle v-if="deploymentInFlight" class="spin" :size="17" />{{ !wallet.address.value ? 'Connect wallet' : deployPhase === 'signing' ? 'Confirm signature' : deployPhase === 'pending' ? `Finalizing · ${TRANSACTION_CONFIRMATIONS}` : deployPhase === 'unknown' ? 'Check in Explorer' : 'Deploy contract' }}</button>
+            <dl class="deploy-summary"><div><dt>Network</dt><dd>{{ wallet.networkLabel.value }}</dd></div><div><dt>Wallet</dt><dd>{{ wallet.address.value ? short(wallet.address.value) : 'Not connected' }}</dd></div></dl>
+            <button class="inspector-primary" type="button" :disabled="deploymentInFlight || functionInFlight || chainActionInFlight || !build" @click="deploy"><LoaderCircle v-if="deploymentInFlight" class="spin" :size="17" />{{ !wallet.address.value ? 'Connect wallet' : !wallet.networkSupported.value ? 'Switch network' : deployPhase === 'signing' ? 'Confirm signature' : deployPhase === 'pending' ? `Finalizing · ${confirmationLabel}` : deployPhase === 'unknown' ? 'Check in Explorer' : 'Deploy contract' }}</button>
           </div>
 
           <div v-else class="inspector-body interact-panel">
-            <div class="status-strip"><span><Check :size="15" />{{ buildPhase === 'success' ? `Build passed · ${build?.codeLength} B` : 'Build required' }}</span><span><Check v-if="deployed" :size="15" />{{ deployed ? `Deployed · ${NETWORK.displayName}` : 'Address required' }}</span></div>
+            <div class="status-strip"><span><Check :size="15" />{{ buildPhase === 'success' ? `Build passed · ${build?.codeLength} B` : 'Build required' }}</span><span><Check v-if="deployed" :size="15" />{{ deployed ? `Deployed · ${wallet.networkLabel.value}` : 'Address required' }}</span></div>
             <label class="target-input"><span>MINI CONTRACT ADDRESS</span><div><input v-model="targetId" spellcheck="false" placeholder="0x…" /><button type="button" :disabled="!targetId" @click="copy(targetId)"><Copy :size="15" /></button></div></label>
             <a v-if="deployment" :href="deploymentTransactionUrl" target="_blank" rel="noreferrer">View deployment transaction</a>
             <div v-if="!build" class="interact-empty">Compile the matching source to generate the contract interaction form.</div>
             <section v-for="fn in build?.functions" :key="fn.selector" class="function-card">
               <header><span>{{ fn.view ? 'READ' : 'WRITE' }}</span><code>{{ fn.signature }}</code></header>
               <label v-for="(type, index) in fn.inputs" :key="`${fn.selector}-${index}`"><span>Argument {{ index + 1 }}</span><small>{{ type }}</small><input v-model="functionArgs[fn.selector]![index]" :placeholder="type" spellcheck="false" /></label>
-              <button :class="{ primary: !fn.view }" type="button" :disabled="functionInFlight || deploymentInFlight || (!fn.view && chainActionInFlight)" @click="invoke(fn)"><LoaderCircle v-if="activeFunction === fn.selector" class="spin" :size="15" />{{ fn.view ? 'Call' : 'Send transaction' }}</button>
+              <button :class="{ primary: !fn.view }" type="button" :disabled="functionInFlight || deploymentInFlight || (!fn.view && chainActionInFlight)" @click="invoke(fn)"><LoaderCircle v-if="activeFunction === fn.selector" class="spin" :size="15" />{{ wallet.address.value && !wallet.networkSupported.value ? 'Switch network' : fn.view ? 'Call' : 'Send transaction' }}</button>
               <output v-if="functionResults[fn.selector]">{{ functionResults[fn.selector] }}</output>
             </section>
           </div>
