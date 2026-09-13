@@ -46,6 +46,7 @@ test("Studio compiles TinySol and exposes deployment controls", async ({ page })
   await expect(page.getByText("Package hash", { exact: true })).toBeVisible();
   await page.getByRole("button", { name: "Collapse console" }).click();
   await expect(page.getByRole("button", { name: "Expand console" })).toBeVisible();
+  await page.getByRole("button", { name: "Deploy", exact: true }).first().click();
   await expect(page.getByRole("button", { name: "Connect wallet", exact: true }).first()).toBeVisible();
 });
 

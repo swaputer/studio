@@ -94,7 +94,7 @@ export async function readAccountId(address: string, runner: ContractRunner = re
 
 async function vmRead(target: string, signature: string, inputTypes: readonly string[] = [], values: readonly unknown[] = [], limit = 3_000, caller?: string | null, runner: ContractRunner = readProvider) {
   requireProtocol();
-  if (!/^0x[0-9a-fA-F]{64}$/.test(target)) throw new Error("Enter a valid 32-byte Mini Contract address.");
+  if (!/^0x[0-9a-fA-F]{64}$/.test(target)) throw new Error("Enter a valid 32-byte address.");
   const encoded = inputTypes.length ? abi.encode([...inputTypes], [...values]) : "0x";
   const payload = `${id(signature).slice(0, 10)}${encoded.slice(2)}`;
   const overrides = caller ? { from: getAddress(caller) } : {};

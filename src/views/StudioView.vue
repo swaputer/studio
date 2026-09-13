@@ -321,8 +321,8 @@ async function deploy() {
       unresolvedTransactionHash.value = result.receipt.hash;
       deployPhase.value = "unknown";
       openInspector("interact");
-      addConsole("Deployment transaction confirmed, but its program ID could not be decoded", "error", result.receipt.hash);
-      toast.success("Deployment confirmed. Verify its program ID in Explorer before retrying.");
+      addConsole("Deployment transaction confirmed, but its address could not be decoded", "error", result.receipt.hash);
+      toast.success("Deployment confirmed. Verify its address in Explorer before retrying.");
     } else {
       if (programId) deployPhase.value = "idle";
       else {
@@ -362,7 +362,7 @@ async function invoke(fn: StudioFunction) {
   if (functionInFlight.value || deploymentInFlight.value) return;
   if (!build.value) return;
   if (!/^0x[0-9a-fA-F]{64}$/.test(targetId.value.trim())) {
-    functionResults.value[fn.selector] = "Enter a valid 32-byte Mini Contract address.";
+    functionResults.value[fn.selector] = "Enter a valid 32-byte address.";
     return;
   }
   if (wallet.address.value && !wallet.networkSupported.value) {
@@ -547,7 +547,7 @@ onBeforeUnmount(() => {
                 <Save v-else :size="16" />
                 {{ activeFile ? (saved ? "Saved" : "Save") : "Save" }}
               </button>
-              <button class="compile-button" type="button" :disabled="!activeFile || buildPhase === 'compiling'" @click="compile()"><LoaderCircle v-if="buildPhase === 'compiling'" class="spin" :size="16" /><Play v-else :size="15" fill="currentColor" />Compile source</button>
+              <button class="compile-button" type="button" :disabled="!activeFile || buildPhase === 'compiling'" @click="compile()"><LoaderCircle v-if="buildPhase === 'compiling'" class="spin" :size="16" /><Play v-else :size="15" fill="currentColor" />Compile</button>
               <div :class="['editor-build-state', `editor-build-state--${buildPhase}`]">
                 <i /><span>{{ buildPhase === 'success' ? 'Compiled successfully' : buildPhase === 'compiling' ? 'Compiling source' : buildPhase === 'error' ? 'Build failed' : 'Ready to compile' }}</span>
               </div>
@@ -613,7 +613,7 @@ onBeforeUnmount(() => {
 
           <div v-else class="inspector-body interact-panel">
             <div class="status-strip"><span><Check :size="15" />{{ buildPhase === 'success' ? `Build passed · ${build?.codeLength} B` : 'Build required' }}</span><span><Check v-if="deployed" :size="15" />{{ deployed ? `Deployed · ${wallet.networkLabel.value}` : 'Address required' }}</span></div>
-            <label class="target-input"><span>MINI CONTRACT ADDRESS</span><div><input v-model="targetId" spellcheck="false" placeholder="0x…" /><button type="button" :disabled="!targetId" @click="copy(targetId)"><Copy :size="15" /></button></div></label>
+            <label class="target-input"><span>ADDRESS</span><div><input v-model="targetId" spellcheck="false" placeholder="0x…" /><button type="button" :disabled="!targetId" aria-label="Copy address" @click="copy(targetId)"><Copy :size="15" /></button></div></label>
             <a v-if="deployment" :href="deploymentTransactionUrl" target="_blank" rel="noreferrer">View deployment transaction</a>
             <div v-if="!build" class="interact-empty">Compile the matching source to generate the contract interaction form.</div>
             <section v-for="fn in build?.functions" :key="fn.selector" class="function-card">

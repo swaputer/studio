@@ -34,11 +34,11 @@ const highlight = HighlightStyle.define([
 ]);
 
 const theme = EditorView.theme({
-  "&": { height: "100%", backgroundColor: "#0f1012", color: "#eeeef1", fontSize: "13px" },
+  "&": { height: "100%", backgroundColor: "#100d11", color: "#f1ebef", fontSize: "13px" },
   ".cm-content": { padding: "15px 0 72px", caretColor: "#ff37c7", fontFamily: "var(--font-mono)", lineHeight: "1.66" },
   ".cm-line": { padding: "0 18px" },
-  ".cm-gutters": { backgroundColor: "#0f1012", color: "#5d5f68", borderRight: "1px solid #24252b", paddingLeft: "7px", paddingRight: "4px" },
-  ".cm-activeLine": { backgroundColor: "rgba(255,255,255,.038)" },
+  ".cm-gutters": { backgroundColor: "#100d11", color: "#665d65", borderRight: "1px solid rgba(236,220,233,.055)", paddingLeft: "7px", paddingRight: "4px" },
+  ".cm-activeLine": { backgroundColor: "rgba(255,55,199,.035)" },
   ".cm-activeLineGutter": { backgroundColor: "transparent", color: "#fff" },
   ".cm-selectionBackground, &.cm-focused .cm-selectionBackground": { backgroundColor: "rgba(255,55,199,.22) !important" },
   ".cm-cursor": { borderLeftColor: "#ff37c7" },
