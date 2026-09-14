@@ -602,7 +602,7 @@ onBeforeUnmount(() => {
           <div v-else-if="inspectorTab === 'deploy'" class="inspector-body deploy-panel">
             <div class="panel-intro"><h2>{{ build?.contractName || 'Compile first' }}</h2><p>Constructor arguments are encoded from the compiled ABI.</p></div>
             <div v-if="build?.constructorTypes.length" class="constructor-fields">
-              <label v-for="(type, index) in build.constructorTypes" :key="`${type}-${index}`"><span>{{ index === 0 ? 'Constructor arguments' : `Argument ${index + 1}` }}</span><small>{{ type }}</small><input v-model="constructorValues[index]" :placeholder="type" spellcheck="false" /></label>
+              <label v-for="(type, index) in build.constructorTypes" :key="`${type}-${index}`"><span>{{ index === 0 ? `Constructor · ${build.constructorNames[index]}` : build.constructorNames[index] }}</span><small>{{ type }}</small><input v-model="constructorValues[index]" :placeholder="type" spellcheck="false" /></label>
             </div>
             <p v-else class="no-constructor">This contract has no constructor arguments.</p>
             <label class="encoded-args"><span>Encoded constructor data</span><textarea :value="encodedConstructor.error || encodedConstructor.value" readonly /></label>
@@ -618,7 +618,7 @@ onBeforeUnmount(() => {
             <div v-if="!build" class="interact-empty">Compile the matching source to generate the contract interaction form.</div>
             <section v-for="fn in build?.functions" :key="fn.selector" class="function-card">
               <header><span>{{ fn.view ? 'READ' : 'WRITE' }}</span><code>{{ fn.signature }}</code></header>
-              <label v-for="(type, index) in fn.inputs" :key="`${fn.selector}-${index}`"><span>Argument {{ index + 1 }}</span><small>{{ type }}</small><input v-model="functionArgs[fn.selector]![index]" :placeholder="type" spellcheck="false" /></label>
+              <label v-for="(type, index) in fn.inputs" :key="`${fn.selector}-${index}`"><span>{{ fn.inputNames[index] }}</span><small>{{ type }}</small><input v-model="functionArgs[fn.selector]![index]" :placeholder="type" spellcheck="false" /></label>
               <button :class="{ primary: !fn.view }" type="button" :disabled="functionInFlight || deploymentInFlight || (!fn.view && chainActionInFlight)" @click="invoke(fn)"><LoaderCircle v-if="activeFunction === fn.selector" class="spin" :size="15" />{{ wallet.address.value && !wallet.networkSupported.value ? 'Switch network' : fn.view ? 'Call' : 'Send transaction' }}</button>
               <output v-if="functionResults[fn.selector]">{{ functionResults[fn.selector] }}</output>
             </section>
@@ -626,7 +626,7 @@ onBeforeUnmount(() => {
         </aside>
       </div>
 
-      <footer class="studio-statusbar"><span>TinySol 0.3</span><span>{{ fileName }}</span><span>Spaces: 2</span><span>UTF-8</span><span><i />{{ buildPhase === 'error' ? 'Build error' : buildPhase === 'compiling' ? 'Compiling' : 'Ready' }}</span></footer>
+      <footer class="studio-statusbar"><span>TinySol {{ build?.languageVersion ?? '1.1' }} · compiler {{ build?.compilerVersion ?? '0.4.0' }}</span><span>{{ fileName }}</span><span>Spaces: 2</span><span>UTF-8</span><span><i />{{ buildPhase === 'error' ? 'Build error' : buildPhase === 'compiling' ? 'Compiling' : 'Ready' }}</span></footer>
     </section>
   </main>
 </template>

@@ -1,4 +1,4 @@
-import { AbiCoder } from "ethers";
+import { AbiCoder, getAddress, isHexString } from "ethers";
 
 export interface StudioTemplate {
   readonly id: string;
@@ -13,6 +13,7 @@ export interface StudioFunction {
   readonly signature: string;
   readonly selector: string;
   readonly inputs: readonly string[];
+  readonly inputNames: readonly string[];
   readonly outputs: readonly string[];
   readonly view: boolean;
 }
@@ -27,9 +28,12 @@ export interface StudioBuild {
   readonly abiHash: string;
   readonly constructorSignature: string;
   readonly constructorTypes: readonly string[];
+  readonly constructorNames: readonly string[];
   readonly functions: readonly StudioFunction[];
   readonly abi: string;
   readonly manifest: string;
+  readonly languageVersion: string;
+  readonly compilerVersion: string;
 }
 
 const COUNTER = `contract Counter {
@@ -66,15 +70,29 @@ export const EMPTY_CONTRACT = `contract MyContract {
 }
 `;
 
-function signatureTypes(signature: string, prefix: string): readonly string[] {
-  if (!signature.startsWith(`${prefix}(`) || !signature.endsWith(")")) return [];
-  const body = signature.slice(prefix.length + 1, -1).trim();
-  return body ? Object.freeze(body.split(",").map((item) => item.trim())) : [];
+function canonicalAbiType(type: string): string {
+  return type === "account" ? "bytes32" : type;
+}
+
+function readableParameterName(name: string, fallback: string): string {
+  if (!name) return fallback;
+  return name.split("$").reduce((result, part, index) => {
+    if (index === 0) return part;
+    return /^\d+$/.test(part) ? `${result}[${part}]` : `${result}.${part}`;
+  }, "");
 }
 
 export async function compileStudioSource(source: string, fileName: string): Promise<StudioBuild> {
   const compiler = await import("@swaputer-labs/tinysol");
   const result = compiler.compileTinySol(source, { sourceName: fileName });
+  const checked = compiler.checkTinySol(source, { sourceName: fileName });
+  const constructorTypes = compiler.parseCanonicalSignature(result.abi.constructor).parameterTypes;
+  const checkedConstructor = checked.program.contract.constructor?.kind === "ConstructorDeclaration"
+    ? checked.program.contract.constructor
+    : undefined;
+  const checkedFunctions = new Map(checked.program.contract.functions
+    .filter((fn) => fn.visibility === "external")
+    .map((fn) => [fn.name, fn]));
   return Object.freeze({
     contractName: result.abi.contract,
     fileName: `${result.abi.contract}.svm`,
@@ -84,17 +102,27 @@ export async function compileStudioSource(source: string, fileName: string): Pro
     codeHash: result.codeHash,
     abiHash: result.abi.abiHash,
     constructorSignature: result.abi.constructor,
-    constructorTypes: signatureTypes(result.abi.constructor, "constructor"),
+    constructorTypes,
+    constructorNames: Object.freeze(constructorTypes.map((_, index) => readableParameterName(
+      checkedConstructor?.parameters[index]?.name ?? "",
+      `Argument ${index + 1}`
+    ))),
     functions: Object.freeze(result.abi.functions.map((fn) => Object.freeze({
       name: fn.name,
       signature: fn.signature,
       selector: fn.selector,
-      inputs: Object.freeze([...fn.inputs]),
-      outputs: Object.freeze([...fn.outputs]),
+      inputs: compiler.parseCanonicalSignature(fn.signature).parameterTypes,
+      inputNames: Object.freeze(fn.inputs.map((_, index) => readableParameterName(
+        checkedFunctions.get(fn.name)?.parameters[index]?.name ?? "",
+        `Argument ${index + 1}`
+      ))),
+      outputs: Object.freeze(fn.outputs.map(canonicalAbiType)),
       view: fn.view
     }))),
     abi: compiler.encodeCompilerArtifact(result.abi),
-    manifest: compiler.encodeCompilerArtifact(result.manifest)
+    manifest: compiler.encodeCompilerArtifact(result.manifest),
+    languageVersion: result.compilerIdentity.languageVersion,
+    compilerVersion: result.compilerIdentity.compilerVersion
   });
 }
 
@@ -106,12 +134,40 @@ export function encodeConstructorArguments(types: readonly string[], values: rea
 
 export function parseScalar(type: string, value: string): unknown {
   const input = value.trim();
+  if (!input) throw new Error(`${type} arguments cannot be empty.`);
   if (type === "bool") {
     if (input !== "true" && input !== "false") throw new Error("Boolean arguments must be true or false.");
     return input === "true";
   }
-  if (type === "uint256" || type === "int256") return BigInt(input);
-  return input;
+  const integer = /^(u?)int(\d+)$/.exec(type);
+  if (integer) {
+    const width = Number(integer[2]);
+    if (width < 8 || width > 256 || width % 8 !== 0) throw new Error(`Unsupported TinySol ABI type: ${type}.`);
+    let parsed: bigint;
+    try { parsed = BigInt(input); }
+    catch { throw new Error(`${type} arguments must be whole numbers.`); }
+    const bits = BigInt(width);
+    const minimum = integer[1] === "u" ? 0n : -(1n << (bits - 1n));
+    const maximum = integer[1] === "u" ? (1n << bits) - 1n : (1n << (bits - 1n)) - 1n;
+    if (parsed < minimum || parsed > maximum) throw new Error(`${input} is outside the ${type} range.`);
+    return parsed;
+  }
+  if (type === "address") {
+    try { return getAddress(input); }
+    catch { throw new Error("Address arguments must be valid 20-byte hex addresses."); }
+  }
+  const fixedBytes = /^bytes([1-9]|[12]\d|3[0-2])$/.exec(type);
+  if (fixedBytes) {
+    const length = Number(fixedBytes[1]);
+    if (!isHexString(input, length)) throw new Error(`${type} arguments must contain exactly ${length} bytes of hex data.`);
+    return input;
+  }
+  if (type === "bytes") {
+    if (!isHexString(input)) throw new Error("bytes arguments must be 0x-prefixed hex data.");
+    return input;
+  }
+  if (type === "string") return input;
+  throw new Error(`Unsupported TinySol ABI type: ${type}.`);
 }
 
 export async function formatStudioError(error: unknown): Promise<string> {

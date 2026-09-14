@@ -33,8 +33,8 @@ importers:
         specifier: 0.1.2
         version: 0.1.2
       '@swaputer-labs/tinysol':
-        specifier: 0.3.2
-        version: 0.3.2
+        specifier: 0.4.0
+        version: 0.4.0
       buffer:
         specifier: 6.0.3
         version: 6.0.3
@@ -247,8 +247,8 @@ packages:
     resolution: {integrity: sha512-UP5KJsdtAU1AcBBWeLgCDUtPemIE1TujqszbuDnBojGSmis9Rsu9m2jFGlzAy/64G/stNs3xQLsI/VQE7BY1RA==}
     engines: {node: '>=20'}
 
-  '@swaputer-labs/tinysol@0.3.2':
-    resolution: {integrity: sha512-VYK/UAqqzRuqybZ9RJcQFP9WqkvehDm6wDU5MwmUs299C3kIg9sR6kE7W4GldDMIjP1tuPOwgurXRvmVi+jZQA==}
+  '@swaputer-labs/tinysol@0.4.0':
+    resolution: {integrity: sha512-lSUhaZXwTv+CxUJ6t9ZEy7Ah6AGSHONRp+w70w8u4Jlk7qxn81QSek6ryjrdhnyQlC7D2F1dgJ4SJQq8/ZtlWQ==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -704,7 +704,7 @@ snapshots:
 
   '@swaputer-labs/receipt-codec@0.1.2': {}
 
-  '@swaputer-labs/tinysol@0.3.2':
+  '@swaputer-labs/tinysol@0.4.0':
     dependencies:
       '@noble/curves': 1.8.1
       '@noble/hashes': 1.7.1

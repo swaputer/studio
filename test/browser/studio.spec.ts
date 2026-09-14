@@ -50,6 +50,22 @@ test("Studio compiles TinySol and exposes deployment controls", async ({ page })
   await expect(page.getByRole("button", { name: "Connect wallet", exact: true }).first()).toBeVisible();
 });
 
+test("Studio compiles TinySol 1.1 aggregate and bounded-value ABI in the browser", async ({ page }) => {
+  const selectAll = process.platform === "darwin" ? "Meta+A" : "Control+A";
+  await page.goto("/");
+  const editor = page.locator(".cm-content");
+  await editor.click();
+  await page.keyboard.press(selectAll);
+  await page.keyboard.insertText("contract Modern { struct Pair { uint24 left; bool ok; } function echo(string<2> text, uint24[2] values, Pair pair) external view returns(string<2>) { return text; } }");
+  await page.getByRole("button", { name: /Compile/ }).click();
+  await expect(page.getByText("Compiled successfully", { exact: true })).toBeVisible();
+  await page.getByRole("button", { name: "Interact", exact: true }).first().click();
+  await expect(page.locator(".function-card")).toContainText("echo(uint256,uint8,uint8,uint24,uint24,uint24,bool)");
+  await expect(page.locator(".function-card")).toContainText("text.length");
+  await expect(page.locator(".function-card")).toContainText("values[1]");
+  await expect(page.locator(".function-card")).toContainText("pair.ok");
+});
+
 test("Studio creates and deletes workspace files and only exposes Counter as a template", async ({ page }) => {
   await page.goto("/");
   await expect(page.getByText("Counter", { exact: true }).first()).toBeVisible();
@@ -117,9 +133,9 @@ test("undo history cannot replace one file with another file's document", async 
 test("Studio disconnects when the wallet account is removed", async ({ page }) => {
   await installWallet(page);
   await page.goto("/");
-  const connect = page.getByRole("banner").getByRole("button", { name: "Connect wallet", exact: true });
+  const connect = page.getByRole("button", { name: "Connect wallet", exact: true }).first();
   await connect.click();
-  await expect(page.getByRole("button", { name: /0x1111/ })).toBeVisible();
+  await expect(page.locator(".deploy-summary")).toContainText("0x1111…1111");
   await page.evaluate(() => (window as unknown as { __walletEvent(name: string, value: unknown): void }).__walletEvent("accountsChanged", []));
   await expect(connect).toBeVisible();
 });
@@ -127,14 +143,14 @@ test("Studio disconnects when the wallet account is removed", async ({ page }) =
 test("Studio detects an unsupported wallet network and offers a switch", async ({ page }) => {
   await installWallet(page, "0x1");
   await page.goto("/");
-  await page.getByRole("banner").getByRole("button", { name: "Connect wallet", exact: true }).click();
+  await page.getByRole("button", { name: "Connect wallet", exact: true }).first().click();
 
   await expect(page.locator(".studio-network-warning")).toContainText("This network is not supported by Swaputer Studio.");
   await expect(page.getByRole("button", { name: `Switch to Base Sepolia` })).toBeVisible();
   await page.getByRole("button", { name: `Switch to Base Sepolia` }).click();
 
   await expect(page.locator(".studio-network-warning")).toHaveCount(0);
-  await expect(page.getByRole("banner").getByRole("button", { name: /0x1111/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Deploy contract", exact: true })).toBeVisible();
 });
 
 test("switching files discards a read that finishes for the previous source", async ({ page }) => {

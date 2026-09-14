@@ -20,7 +20,7 @@
     "@lezer/highlight": "^1.2.3",
     "@lucide/vue": "1.37.0",
     "@swaputer-labs/receipt-codec": "0.1.2",
-    "@swaputer-labs/tinysol": "0.3.2",
+    "@swaputer-labs/tinysol": "0.4.0",
     "buffer": "6.0.3",
     "ethers": "6.17.0",
     "vue": "3.5.42"
