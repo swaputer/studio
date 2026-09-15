@@ -1,7 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { AbiCoder } from "ethers";
 
-const configuredRpcUrl = new URL(process.env.VITE_RPC_URL || "https://base-sepolia-rpc.publicnode.com");
+const configuredRpcUrl = new URL(process.env.VITE_RPC_URL || "https://ethereum-rpc.publicnode.com");
 const isConfiguredRpc = (url: URL) => (
   url.origin === configuredRpcUrl.origin && url.pathname === configuredRpcUrl.pathname
 );
@@ -146,8 +146,8 @@ test("Studio detects an unsupported wallet network and offers a switch", async (
   await page.getByRole("button", { name: "Connect wallet", exact: true }).first().click();
 
   await expect(page.locator(".studio-network-warning")).toContainText("This network is not supported by Swaputer Studio.");
-  await expect(page.getByRole("button", { name: `Switch to Base Sepolia` })).toBeVisible();
-  await page.getByRole("button", { name: `Switch to Base Sepolia` }).click();
+  await expect(page.getByRole("button", { name: `Switch to Ethereum Mainnet` })).toBeVisible();
+  await page.getByRole("button", { name: `Switch to Ethereum Mainnet` }).click();
 
   await expect(page.locator(".studio-network-warning")).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Deploy contract", exact: true })).toBeVisible();

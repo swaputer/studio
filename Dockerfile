@@ -8,7 +8,7 @@ RUN npm ci \
     --fetch-retries=5 \
     --maxsockets=1
 COPY . .
-ARG VITE_RPC_URL=https://base-sepolia-rpc.publicnode.com
+ARG VITE_RPC_URL=https://ethereum-rpc.publicnode.com
 ARG VITE_PROTOCOL_EXPLORER_URL
 ENV VITE_RPC_URL=$VITE_RPC_URL VITE_PROTOCOL_EXPLORER_URL=$VITE_PROTOCOL_EXPLORER_URL
 RUN test -n "$VITE_PROTOCOL_EXPLORER_URL" && npm run build

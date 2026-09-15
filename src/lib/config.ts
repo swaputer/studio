@@ -1,4 +1,4 @@
-import activeRelease from "../../config/base-sepolia.json";
+import activeRelease from "../../config/ethereum-mainnet.json";
 
 interface UniswapV4Release {
   readonly universalRouter: string;
@@ -8,6 +8,7 @@ interface UniswapV4Release {
 
 const candidateRelease = activeRelease as typeof activeRelease & {
   readonly upstream?: { readonly uniswapV4?: UniswapV4Release };
+  readonly core: typeof activeRelease.core & { readonly tradingLive?: boolean };
 };
 
 const configuredConfirmations = Number(activeRelease.indexer.confirmations);
@@ -30,7 +31,7 @@ export const NETWORK = Object.freeze({
   get chainIdHex() { return `0x${this.chainId.toString(16)}`; },
   chainName: pinned("VITE_CHAIN_NAME", activeRelease.network.name),
   displayName: pinned("VITE_CHAIN_NAME", activeRelease.network.name),
-  rpcUrl: value("VITE_RPC_URL") || "https://base-sepolia-rpc.publicnode.com",
+  rpcUrl: value("VITE_RPC_URL") || "https://ethereum-rpc.publicnode.com",
   explorerUrl: pinned("VITE_EXPLORER_URL", activeRelease.network.explorerUrl),
   nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 }
 });
@@ -60,6 +61,7 @@ export const SWAPVM = Object.freeze({
   vmInputWei,
   sqrtPriceLimitX96,
   minNetTokenOut: BigInt(pinned("VITE_SWAPVM_MIN_NET_TOKEN_OUT", activeRelease.parameters.minNetTokenOut)),
+  tradingLive: candidateRelease.core.tradingLive === true,
   enabled:
     /^0x[0-9a-fA-F]{64}$/.test(worldId)
     && /^0x[0-9a-fA-F]{40}$/.test(kernel)

@@ -32,7 +32,7 @@ npx playwright test
 The compiler is the published `@swaputer-labs/tinysol@0.4.0` package (TinySol language v1.1), and
 confirmed Kernel receipts are decoded with
 `@swaputer-labs/receipt-codec@0.1.2`. Protocol addresses are pinned in
-`config/base-sepolia.json`; build-time overrides must match that release.
+`config/ethereum-mainnet.json`; build-time overrides must match that release.
 Wallet account or network changes invalidate the active Studio signer and
 require reconnection.
 
@@ -43,7 +43,7 @@ addresses and byte values before submitting a call. Filesystem and npm-style
 imports remain CLI features because the public project compiler resolves files
 through Node.js; the browser workspace compiles the active source file.
 
-Deployments and state-changing calls share one protocol-write lock. A write is shown as confirmed when its one-confirmation Base receipt succeeds; protocol execution is atomic, so an SVM failure reverts the outer transaction. Studio then decodes the deployed program ID from that receipt; if an RPC cannot obtain it, Studio keeps the full hash available for Explorer reconciliation and blocks another write until reload.
+Deployments and state-changing calls share one protocol-write lock. The Ethereum mainnet release uses one confirmation. Studio does not use the Hook's trading status as a global client-side write gate; the onchain route remains authoritative for each transaction. Protocol execution is atomic, so an SVM failure reverts the outer transaction. Studio then decodes the deployed program ID from that receipt; if an RPC cannot obtain it, Studio keeps the full hash available for Explorer reconciliation and blocks another write until reload.
 
 ## Deployment
 
